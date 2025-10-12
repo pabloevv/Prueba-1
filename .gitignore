@@ -1,0 +1,16 @@
+# SO / editores
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+
+# Node / dependencias (si luego agregas)
+node_modules/
+
+
+# Archivos locales/temporales
+uploads/
+*.log
+.env
+luggo.db
