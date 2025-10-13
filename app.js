@@ -200,6 +200,70 @@ const loginPasswordInput = document.getElementById('loginPassword');
 
 const AUTH_STORAGE_KEY = 'luggo:auth:v1';
 const API_BASE = window.__API_BASE_URL__ || '/api';
+const MAX_PHOTO_DIMENSION = 720;
+
+function readFileAsDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error || new Error('No se pudo leer el archivo.'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function resizeImageDataUrl(dataUrl, maxDimension = MAX_PHOTO_DIMENSION) {
+  if (!dataUrl || typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) {
+    return Promise.resolve(dataUrl);
+  }
+
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => {
+      const { width, height } = image;
+      if (!width || !height) {
+        resolve(dataUrl);
+        return;
+      }
+
+      const largestSide = Math.max(width, height);
+      if (largestSide <= maxDimension) {
+        resolve(dataUrl);
+        return;
+      }
+
+      const scale = maxDimension / largestSide;
+      const targetWidth = Math.round(width * scale);
+      const targetHeight = Math.round(height * scale);
+
+      const canvas = document.createElement('canvas');
+      canvas.width = targetWidth;
+      canvas.height = targetHeight;
+      const ctx = canvas.getContext('2d', { willReadFrequently: false });
+      ctx.drawImage(image, 0, 0, targetWidth, targetHeight);
+
+      try {
+        const optimised = canvas.toDataURL('image/jpeg', 0.82);
+        resolve(optimised);
+      } catch (error) {
+        reject(error);
+      }
+    };
+    image.onerror = () => reject(new Error('No se pudo procesar la imagen seleccionada.'));
+    image.src = dataUrl;
+  });
+}
+
+async function ensureOptimisedPhoto(photo) {
+  if (!photo || typeof photo !== 'string') return null;
+  const trimmed = photo.trim();
+  if (!trimmed) return null;
+  try {
+    return await resizeImageDataUrl(trimmed);
+  } catch (error) {
+    console.warn('No se pudo optimizar la imagen en el cliente:', error);
+    return trimmed;
+  }
+}
 
 // --- Utilidades ---
 function escapeHTML(value) {
@@ -424,7 +488,7 @@ const voted = new Set();
 async function vote(reviewId, delta) {
   const key = String(reviewId);
   if (voted.has(key)) return;
-  const review = reviews.find(item => item.id === reviewId);
+  const review = reviews.find(item => String(item.id) === key);
   if (!review) return;
   voted.add(key);
   try {
@@ -912,23 +976,30 @@ function updateModalSelection({ name, address, coords, photo }) {
 }
 
 if (photoFileInput) {
-  photoFileInput.addEventListener('change', () => {
+  photoFileInput.addEventListener('change', async () => {
     const file = photoFileInput.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const dataUrl = reader.result;
+
+    updateAddPlaceStatus('Procesando imagen (máx 720p)...');
+    try {
+      const originalDataUrl = await readFileAsDataURL(file);
+      const optimisedDataUrl = await ensureOptimisedPhoto(originalDataUrl);
+
       if (!modalSelection) modalSelection = {};
       if (!modalSelection.autoPhoto && modalSelection.photo && photoInput.dataset.manual !== 'true') {
         modalSelection.autoPhoto = modalSelection.photo;
       }
-      modalSelection.photo = dataUrl;
+
+      modalSelection.photo = optimisedDataUrl;
       photoInput.value = '';
       photoInput.dataset.manual = 'true';
       photoInput.dataset.auto = 'false';
-      updatePhotoPreview(dataUrl, file.name || placeNameInput?.value || 'Imagen local');
-    };
-    reader.readAsDataURL(file);
+      updatePhotoPreview(optimisedDataUrl, file.name || placeNameInput?.value || 'Imagen local');
+      updateAddPlaceStatus('Imagen optimizada lista para subir.');
+    } catch (error) {
+      console.error('Error al procesar la imagen local:', error);
+      updateAddPlaceStatus('No se pudo procesar la imagen. Intenta con otro archivo.');
+    }
   });
 }
 addPlaceSearchForm?.addEventListener('submit', async event => {
@@ -1029,20 +1100,21 @@ async function saveReview() {
   const useManual = photoInput?.dataset.manual === 'true' && manualPhoto;
   const selectionPhoto = modalSelection.photo || autoPhotoFor(placeName || placeAddress);
   const finalPhoto = useManual ? manualPhoto : selectionPhoto;
+  const optimisedPhoto = await ensureOptimisedPhoto(finalPhoto);
 
   const placeData = {
     id: placeId,
     name: placeName,
     address: placeAddress,
     coords: modalSelection.coords,
-    photo: finalPhoto
+    photo: optimisedPhoto
   };
 
   const reviewData = {
     rating,
     note,
     tags,
-    photo: finalPhoto,
+    photo: optimisedPhoto,
     city: placeAddress
   };
 

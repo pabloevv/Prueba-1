@@ -5,6 +5,7 @@ const cors = require('cors');
 const dotenv = require('dotenv');
 const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
+const sharp = require('sharp');
 
 dotenv.config();
 
@@ -15,6 +16,7 @@ const PGSSLMODE = (process.env.PGSSLMODE || '').toLowerCase();
 const STATIC_DIR = process.env.STATIC_DIR
   ? path.resolve(process.env.STATIC_DIR)
   : __dirname;
+const PHOTO_MAX_DIMENSION = Number(process.env.PHOTO_MAX_DIMENSION || 720);
 
 if (!DATABASE_URL) {
   console.error('Falta la variable de entorno DATABASE_URL en el archivo .env');
@@ -117,12 +119,86 @@ const corsOptions =
     : { origin: true, credentials: true };
 
 app.use(cors(corsOptions));
-app.use(express.json({ limit: '2mb' }));
+app.use(express.json({ limit: '10mb' }));
 
 function toNumber(value) {
   if (value === null || value === undefined) return null;
   const num = Number(value);
   return Number.isFinite(num) ? num : null;
+}
+
+const DATA_URL_REGEX = /^data:(image\/[a-z0-9+.\-]+);base64,(.+)$/i;
+
+async function optimiseImageDataUrl(dataUrl) {
+  const match = DATA_URL_REGEX.exec(dataUrl);
+  if (!match) {
+    return dataUrl;
+  }
+
+  const [, mimeType, base64Payload] = match;
+  const inputBuffer = Buffer.from(base64Payload, 'base64');
+
+  const image = sharp(inputBuffer, { limitInputPixels: false });
+  const metadata = await image.metadata();
+
+  if (!metadata.width || !metadata.height) {
+    return dataUrl;
+  }
+
+  let pipeline = image.rotate();
+
+  if (metadata.width > PHOTO_MAX_DIMENSION || metadata.height > PHOTO_MAX_DIMENSION) {
+    pipeline = pipeline.resize({
+      width: PHOTO_MAX_DIMENSION,
+      height: PHOTO_MAX_DIMENSION,
+      fit: 'inside',
+      withoutEnlargement: true
+    });
+  }
+
+  const lowerMime = (mimeType || '').toLowerCase();
+  let outputBuffer;
+  let outputMime = lowerMime;
+
+  if (metadata.hasAlpha) {
+    outputBuffer = await pipeline.png({ compressionLevel: 9 }).toBuffer();
+    outputMime = 'image/png';
+  } else if (lowerMime === 'image/webp') {
+    outputBuffer = await pipeline.webp({ quality: 80 }).toBuffer();
+    outputMime = 'image/webp';
+  } else if (lowerMime === 'image/avif') {
+    outputBuffer = await pipeline.avif({ quality: 50 }).toBuffer();
+    outputMime = 'image/avif';
+  } else {
+    outputBuffer = await pipeline.jpeg({ quality: 82, chromaSubsampling: '4:4:4' }).toBuffer();
+    outputMime = 'image/jpeg';
+  }
+
+  if (outputBuffer.length >= inputBuffer.length) {
+    // No ganancia; conserva original.
+    return dataUrl;
+  }
+
+  return `data:${outputMime};base64,${outputBuffer.toString('base64')}`;
+}
+
+async function processPhotoValue(rawValue) {
+  if (!rawValue || typeof rawValue !== 'string') {
+    return null;
+  }
+  const trimmed = rawValue.trim();
+  if (!trimmed) {
+    return null;
+  }
+  if (!trimmed.startsWith('data:image/')) {
+    return trimmed;
+  }
+  try {
+    return await optimiseImageDataUrl(trimmed);
+  } catch (error) {
+    console.warn('No se pudo optimizar la imagen recibida:', error);
+    return trimmed;
+  }
 }
 
 function mapPlaceRow(row) {
@@ -526,6 +602,7 @@ app.post('/api/places', async (req, res) => {
       : typeof payload.photo_url === 'string'
       ? payload.photo_url.trim()
       : null;
+  const processedPhoto = await processPhotoValue(photo);
   const latitude = toNumber(payload.latitude ?? payload.lat);
   const longitude = toNumber(payload.longitude ?? payload.lng);
 
@@ -549,7 +626,7 @@ app.post('/api/places', async (req, res) => {
             updated_at = now()
         RETURNING id, name, address, photo, latitude, longitude
       `,
-      [placeId, name, address, photo || null, latitude, longitude]
+      [placeId, name, address, processedPhoto || null, latitude, longitude]
     );
 
     return res.status(201).json({ place: mapPlaceRow(rows[0]) });
@@ -573,6 +650,11 @@ app.post('/api/reviews', async (req, res) => {
 
   const placeData = place || {};
   const reviewData = review || {};
+
+  const [placePhoto, reviewPhoto] = await Promise.all([
+    processPhotoValue(placeData.photo),
+    processPhotoValue(reviewData.photo)
+  ]);
 
   if (!placeData.id || !placeData.name) {
     return res.status(400).json({ error: 'Faltan datos del lugar.' });
@@ -629,7 +711,7 @@ app.post('/api/reviews', async (req, res) => {
         placeData.id,
         placeData.name,
         placeData.address || '',
-        placeData.photo || null,
+        placePhoto || null,
         coordsLat,
         coordsLng
       ]
@@ -658,7 +740,7 @@ app.post('/api/reviews', async (req, res) => {
         authorName || placeData.name || 'Autor',
         rating,
         reviewData.note || '',
-        reviewData.photo || null,
+        reviewPhoto || null,
         tags,
         reviewData.city || placeData.address || '',
         coordsLat,
@@ -757,7 +839,7 @@ ensureCoreTables()
       const localUrl = `http://${HOST === '0.0.0.0' ? '127.0.0.1' : HOST}:${PORT}`;
       console.log(`API y frontend disponibles en ${localUrl}`);
       if (HOST === '0.0.0.0') {
-        console.log('Comparte la IP Tailscale de esta máquina para que otros dispositivos accedan al sistema.');
+        console.log('Para otra máquina es http://100.117.52.45:3000');
       }
     });
   })
