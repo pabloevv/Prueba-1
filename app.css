@@ -176,12 +176,44 @@ main {
 }
 
 .vote button {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
   background: #0c142b;
   border: 1px solid rgba(255, 255, 255, 0.12);
   color: var(--text);
-  padding: 0.35rem 0.55rem;
-  border-radius: 10px;
+  padding: 0.35rem 0.6rem;
+  border-radius: 999px;
   cursor: pointer;
+  font-weight: 600;
+  transition: transform 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.vote button .icon {
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.vote button .count {
+  min-width: 1.4rem;
+  text-align: center;
+}
+
+.vote button:hover {
+  transform: translateY(-1px);
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
+.vote button.active[data-vote='up'] {
+  background: rgba(34, 197, 94, 0.18);
+  border-color: rgba(34, 197, 94, 0.55);
+  color: #bbf7d0;
+}
+
+.vote button.active[data-vote='down'] {
+  background: rgba(239, 68, 68, 0.18);
+  border-color: rgba(239, 68, 68, 0.55);
+  color: #fecaca;
 }
 
 .fab {

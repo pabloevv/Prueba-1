@@ -783,22 +783,28 @@ app.post('/api/reviews/:id/vote', async (req, res) => {
   }
 
   const delta = Number(req.body?.delta);
-  if (delta !== 1 && delta !== -1) {
-    return res.status(400).json({ error: 'El voto debe ser 1 o -1.' });
+  const previous = req.body?.previous;
+  if (![1, -1, 0].includes(delta)) {
+    return res.status(400).json({ error: 'El voto debe ser 1, 0 o -1.' });
   }
 
-  const column = delta > 0 ? 'upvotes' : 'downvotes';
+  const previousVote = typeof previous === 'number' ? previous : null;
 
   try {
     const { rows } = await pool.query(
       `
         UPDATE reviews
-        SET ${column} = ${column} + 1,
+        SET upvotes = upvotes
+          + CASE WHEN $2 = 1 THEN 1 ELSE 0 END
+          - CASE WHEN $3 = 1 THEN 1 ELSE 0 END,
+            downvotes = downvotes
+          + CASE WHEN $2 = -1 THEN 1 ELSE 0 END
+          - CASE WHEN $3 = -1 THEN 1 ELSE 0 END,
             updated_at = now()
         WHERE id = $1
         RETURNING id, upvotes, downvotes
       `,
-      [reviewId]
+      [reviewId, delta, previousVote ?? 0]
     );
 
     if (!rows.length) {

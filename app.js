@@ -85,7 +85,8 @@ function normalizeReviewEntry(rawReview, currentUser) {
     up: Number(rawReview.up) || 0,
     down: Number(rawReview.down) || 0,
     createdAt,
-    coords
+    coords,
+    myVote: Number(rawReview.myVote || 0)
   };
 }
 
@@ -484,35 +485,45 @@ function setupAuthUI() {
 }
 
 // --- Votaciones ---
-const voted = new Set();
+const voteLocks = new Set();
 async function vote(reviewId, delta) {
   const key = String(reviewId);
-  if (voted.has(key)) return;
+  if (voteLocks.has(key)) return;
   const review = reviews.find(item => String(item.id) === key);
   if (!review) return;
-  voted.add(key);
+
+  const previousVote = Number(review.myVote || 0);
+  let nextVote = delta;
+
+  if (previousVote === delta) {
+    nextVote = 0;
+  }
+
+  voteLocks.add(key);
   try {
     const { response, payload } = await requestJSON(
       `${API_BASE}/reviews/${reviewId}/vote`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ delta })
+        body: JSON.stringify({ delta: nextVote, previous: previousVote })
       }
     );
 
     if (!response.ok) {
-      voted.delete(key);
+      voteLocks.delete(key);
       console.error('No se pudo registrar el voto', payload?.error);
       return;
     }
 
     review.up = Number(payload?.up) || review.up;
     review.down = Number(payload?.down) || review.down;
+    review.myVote = nextVote;
     recomputeRep();
     renderAll();
+    voteLocks.delete(key);
   } catch (error) {
-    voted.delete(key);
+    voteLocks.delete(key);
     console.error('Error al registrar voto', error);
   }
 }
@@ -542,6 +553,8 @@ function reviewCardHTML(review) {
   const fallbackSrc = escapeAttr(placeholder);
   const karma = userRep.get(review.userId) || 0;
   const rank = rankFromKarma(karma);
+  const likeActive = review.myVote === 1 ? 'active' : '';
+  const dislikeActive = review.myVote === -1 ? 'active' : '';
   return `
     <article class="card">
       <div class="media">
@@ -569,8 +582,14 @@ function reviewCardHTML(review) {
         <div class="row">
           <div>${tags}</div>
           <div class="vote">
-            <button onclick="vote(${review.id}, 1)">Me gusta ${review.up}</button>
-            <button onclick="vote(${review.id}, -1)">No me gusta ${review.down}</button>
+            <button class="${likeActive}" data-vote="up" onclick="vote(${review.id}, 1)" aria-pressed="${review.myVote === 1}" aria-label="Me gusta">
+              <span class="icon">👍</span>
+              <span class="count">${review.up}</span>
+            </button>
+            <button class="${dislikeActive}" data-vote="down" onclick="vote(${review.id}, -1)" aria-pressed="${review.myVote === -1}" aria-label="No me gusta">
+              <span class="icon">👎</span>
+              <span class="count">${review.down}</span>
+            </button>
           </div>
         </div>
       </div>
