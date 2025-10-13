@@ -1,84 +1,155 @@
-﻿// --- Datos base de lugares ---
-const PLACES = [
-  {
-    id: 'cafe-aurora',
-    name: 'Café Aurora',
-    address: 'San José, CR',
-    coords: { lat: 9.9339, lng: -84.0833 },
-    photo: 'https://images.unsplash.com/photo-1541167760496-1628856ab772?q=80&w=1200&auto=format&fit=crop'
-  },
-  {
-    id: 'parque-sabana',
-    name: 'Parque La Sabana',
-    address: 'San José, CR',
-    coords: { lat: 9.938, lng: -84.1008 },
-    photo: 'https://images.unsplash.com/photo-1558981359-219d6364c9b8?q=80&w=1200&auto=format&fit=crop'
-  },
-  {
-    id: 'mercado-central',
-    name: 'Mercado Central',
-    address: 'San José, CR',
-    coords: { lat: 9.9343, lng: -84.0818 },
-    photo: 'https://images.unsplash.com/photo-1542831371-29b0f74f9713?q=80&w=1200&auto=format&fit=crop'
-  }
-];
-const placeById = {};
-PLACES.forEach(place => {
-  placeById[place.id] = place;
-});
+﻿// --- Datos dinamicos ---
+let PLACES = [];
+let placeById = {};
 
-// --- Reseñas demo ---
-let reviews = [
-  {
-    id: 1,
-    placeId: 'cafe-aurora',
-    city: 'San José, CR',
-    rating: 5,
-    photo: '',
-    note: 'Capuchino cremoso y terraza con sombra. Ideal para estudiar.',
-    tags: ['café', 'wifi', 'brunch'],
-    userId: 'u1',
-    userName: 'Usuario Demo',
-    me: true,
-    up: 3,
-    down: 0,
-    createdAt: Date.now() - 1000 * 60 * 60 * 6,
-    coords: { lat: 9.9339, lng: -84.0833 }
-  },
-  {
-    id: 2,
-    placeId: 'parque-sabana',
-    city: 'San José, CR',
-    rating: 4,
-    photo: '',
-    note: 'Buen lugar para correr al atardecer. Llevar repelente (mosquitos).',
-    tags: ['aire libre', 'running'],
-    userId: 'u2',
-    userName: 'María',
-    me: false,
-    up: 2,
-    down: 1,
-    createdAt: Date.now() - 1000 * 60 * 60 * 24,
-    coords: { lat: 9.938, lng: -84.1008 }
-  },
-  {
-    id: 3,
-    placeId: 'mercado-central',
-    city: 'San José, CR',
-    rating: 5,
-    photo: '',
-    note: 'Sodas típicas ricas y baratas. Prueba el casado.',
-    tags: ['comida típica', 'barato'],
-    userId: 'u3',
-    userName: 'Luis',
-    me: false,
-    up: 5,
-    down: 0,
-    createdAt: Date.now() - 1000 * 60 * 60 * 30,
-    coords: { lat: 9.9343, lng: -84.0818 }
-  }
-];
+function normalizePlaceEntry(place) {
+  if (!place || !place.id) return null;
+  const hasCoords =
+    place.coords &&
+    typeof place.coords.lat === 'number' &&
+    typeof place.coords.lng === 'number';
+  return {
+    id: place.id,
+    name: place.name || 'Lugar',
+    address: place.address || '',
+    coords: hasCoords ? { lat: place.coords.lat, lng: place.coords.lng } : null,
+    photo: place.photo || ''
+  };
+}
 
+function setPlaces(source) {
+  const next = Array.isArray(source) ? source : [];
+  PLACES = [];
+  placeById = {};
+  next.forEach(item => {
+    const normalized = normalizePlaceEntry(item);
+    if (!normalized) return;
+    PLACES.push(normalized);
+    placeById[normalized.id] = normalized;
+  });
+}
+
+function upsertPlace(place) {
+  const normalized = normalizePlaceEntry(place);
+  if (!normalized) return;
+  const existingIndex = PLACES.findIndex(item => item.id === normalized.id);
+  if (existingIndex >= 0) {
+    PLACES[existingIndex] = { ...PLACES[existingIndex], ...normalized };
+    placeById[normalized.id] = PLACES[existingIndex];
+  } else {
+    PLACES.push(normalized);
+    placeById[normalized.id] = normalized;
+  }
+}
+
+let reviews = [];
+let dataLoaded = false;
+
+function normalizeReviewEntry(rawReview, currentUser) {
+  if (!rawReview) return null;
+  const user = currentUser || getStoredUser();
+  const place = rawReview.placeId ? placeById[rawReview.placeId] : null;
+  const hasCoords =
+    rawReview.coords &&
+    typeof rawReview.coords.lat === 'number' &&
+    typeof rawReview.coords.lng === 'number';
+  const coords = hasCoords
+    ? { lat: rawReview.coords.lat, lng: rawReview.coords.lng }
+    : place?.coords || null;
+  const createdAt =
+    typeof rawReview.createdAt === 'number'
+      ? rawReview.createdAt
+      : Date.parse(rawReview.createdAt) || Date.now();
+  const belongsToUser = Boolean(user && rawReview.userId === user.id);
+  const resolvedName = rawReview.userName && String(rawReview.userName).trim()
+    ? String(rawReview.userName).trim()
+    : belongsToUser
+    ? (user?.displayName || user?.username || 'Yo')
+    : 'Visitante';
+
+  return {
+    id: rawReview.id,
+    placeId: rawReview.placeId,
+    city: rawReview.city || place?.address || '',
+    rating: Number(rawReview.rating) || 0,
+    photo: rawReview.photo || place?.photo || '',
+    note: rawReview.note || '',
+    tags: Array.isArray(rawReview.tags)
+      ? rawReview.tags
+          .map(tag => String(tag).trim())
+          .filter(Boolean)
+      : [],
+    userId: rawReview.userId ?? null,
+    userName: resolvedName,
+    me: belongsToUser,
+    up: Number(rawReview.up) || 0,
+    down: Number(rawReview.down) || 0,
+    createdAt,
+    coords
+  };
+}
+
+function setReviews(source, currentUser) {
+  const next = Array.isArray(source) ? source : [];
+  reviews = next
+    .map(item => normalizeReviewEntry(item, currentUser))
+    .filter(Boolean);
+}
+
+function refreshReviewOwnership() {
+  const currentUser = getStoredUser();
+  reviews.forEach(review => {
+    const isOwner = Boolean(currentUser && review.userId === currentUser.id);
+    review.me = isOwner;
+    if (isOwner) {
+      review.userName =
+        currentUser.displayName || currentUser.username || review.userName;
+    }
+  });
+}
+
+async function requestJSON(url, options = {}) {
+  const response = await fetch(url, options);
+  let payload = null;
+  try {
+    const text = await response.text();
+    payload = text ? JSON.parse(text) : null;
+  } catch (parseError) {
+    console.warn('No se pudo interpretar la respuesta JSON de', url, parseError);
+  }
+  return { response, payload };
+}
+
+async function loadInitialData(force = false) {
+  if (dataLoaded && !force) return;
+  try {
+    const [placesResult, reviewsResult] = await Promise.all([
+      requestJSON(`${API_BASE}/places`),
+      requestJSON(`${API_BASE}/reviews`)
+    ]);
+
+    if (!placesResult.response?.ok) {
+      throw new Error(
+        placesResult.payload?.error || 'No se pudieron cargar los lugares.'
+      );
+    }
+    if (!reviewsResult.response?.ok) {
+      throw new Error(
+        reviewsResult.payload?.error || 'No se pudieron cargar las reseñas.'
+      );
+    }
+
+    setPlaces(placesResult.payload?.places);
+    const currentUser = getStoredUser();
+    setReviews(reviewsResult.payload?.reviews, currentUser);
+    refreshReviewOwnership();
+    recomputeRep();
+    renderAll();
+    dataLoaded = true;
+  } catch (error) {
+    console.error('Error al cargar datos iniciales', error);
+  }
+}
 // --- Reputación ---
 const userRep = new Map();
 function recomputeRep() {
@@ -101,6 +172,8 @@ const feedList = document.getElementById('feedList');
 const profileList = document.getElementById('profileList');
 const searchInput = document.getElementById('searchInput');
 const profileStats = document.getElementById('profileStats');
+const profileName = document.getElementById('profileName');
+const profileHandle = document.getElementById('profileHandle');
 const mapContainer = document.getElementById('map');
 const mapSearchForm = document.getElementById('mapSearchForm');
 const mapSearchInput = document.getElementById('mapSearchInput');
@@ -119,6 +192,78 @@ const noteInput = document.getElementById('f_note');
 const tagsInput = document.getElementById('f_tags');
 const photoFileInput = document.getElementById('f_photo_file');
 const photoPreview = document.getElementById('photoPreview');
+const loginOverlay = document.getElementById('loginOverlay');
+const loginForm = document.getElementById('loginForm');
+const loginStatus = document.getElementById('loginStatus');
+const loginUsernameInput = document.getElementById('loginUsername');
+const loginPasswordInput = document.getElementById('loginPassword');
+
+const AUTH_STORAGE_KEY = 'luggo:auth:v1';
+const API_BASE = window.__API_BASE_URL__ || '/api';
+const MAX_PHOTO_DIMENSION = 720;
+
+function readFileAsDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error || new Error('No se pudo leer el archivo.'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function resizeImageDataUrl(dataUrl, maxDimension = MAX_PHOTO_DIMENSION) {
+  if (!dataUrl || typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) {
+    return Promise.resolve(dataUrl);
+  }
+
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => {
+      const { width, height } = image;
+      if (!width || !height) {
+        resolve(dataUrl);
+        return;
+      }
+
+      const largestSide = Math.max(width, height);
+      if (largestSide <= maxDimension) {
+        resolve(dataUrl);
+        return;
+      }
+
+      const scale = maxDimension / largestSide;
+      const targetWidth = Math.round(width * scale);
+      const targetHeight = Math.round(height * scale);
+
+      const canvas = document.createElement('canvas');
+      canvas.width = targetWidth;
+      canvas.height = targetHeight;
+      const ctx = canvas.getContext('2d', { willReadFrequently: false });
+      ctx.drawImage(image, 0, 0, targetWidth, targetHeight);
+
+      try {
+        const optimised = canvas.toDataURL('image/jpeg', 0.82);
+        resolve(optimised);
+      } catch (error) {
+        reject(error);
+      }
+    };
+    image.onerror = () => reject(new Error('No se pudo procesar la imagen seleccionada.'));
+    image.src = dataUrl;
+  });
+}
+
+async function ensureOptimisedPhoto(photo) {
+  if (!photo || typeof photo !== 'string') return null;
+  const trimmed = photo.trim();
+  if (!trimmed) return null;
+  try {
+    return await resizeImageDataUrl(trimmed);
+  } catch (error) {
+    console.warn('No se pudo optimizar la imagen en el cliente:', error);
+    return trimmed;
+  }
+}
 
 // --- Utilidades ---
 function escapeHTML(value) {
@@ -212,17 +357,164 @@ function updatePhotoPreview(src, alt = 'Vista previa') {
 
 updatePhotoPreview(null);
 
+// --- Autenticaci�n ---
+function getStoredUser() {
+  const raw = localStorage.getItem(AUTH_STORAGE_KEY);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function setStoredUser(user) {
+  if (user) {
+    localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(user));
+  } else {
+    localStorage.removeItem(AUTH_STORAGE_KEY);
+  }
+}
+
+function setLoginError(message) {
+  if (!loginStatus) return;
+  loginStatus.textContent = message || '';
+}
+
+function setLoginPending(pending) {
+  if (loginForm) {
+    loginForm.classList.toggle('pending', pending);
+  }
+  [loginUsernameInput, loginPasswordInput].forEach(input => {
+    if (!input) return;
+    input.disabled = pending;
+  });
+  const submitButton = loginForm?.querySelector('button[type="submit"]');
+  if (submitButton) {
+    submitButton.disabled = pending;
+  }
+}
+
+function hideLogin() {
+  if (loginOverlay) {
+    loginOverlay.classList.add('hidden');
+  }
+}
+
+function showLogin() {
+  if (loginOverlay) {
+    loginOverlay.classList.remove('hidden');
+  }
+}
+
+function updateProfileFromAuth(user) {
+  if (!user) return;
+  if (profileName) {
+    profileName.textContent = user.displayName || user.username;
+  }
+  if (profileHandle) {
+    profileHandle.textContent = `@${user.username}`;
+  }
+}
+
+async function handleLoginSubmit(event) {
+  event.preventDefault();
+  if (!loginUsernameInput || !loginPasswordInput) return;
+
+  const username = loginUsernameInput.value.trim();
+  const password = loginPasswordInput.value;
+
+  if (!username || !password) {
+    setLoginError('Completa usuario y contrase\u00f1a.');
+    return;
+  }
+
+  setLoginPending(true);
+  setLoginError('');
+
+  try {
+    const response = await fetch(`${API_BASE}/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password })
+    });
+
+    const payload = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      setLoginError(payload?.error || 'No se pudo iniciar sesi\u00f3n.');
+      return;
+    }
+
+    const user = payload?.user;
+    if (!user) {
+      setLoginError('Respuesta inesperada del servidor.');
+      return;
+    }
+
+    setStoredUser(user);
+    updateProfileFromAuth(user);
+    hideLogin();
+    loginPasswordInput.value = '';
+    refreshReviewOwnership();
+    if (dataLoaded) {
+      recomputeRep();
+      renderAll();
+    }
+  } catch (error) {
+    console.error('Error al iniciar sesi\u00f3n', error);
+    setLoginError('No se pudo conectar al servidor.');
+  } finally {
+    setLoginPending(false);
+  }
+}
+
+function setupAuthUI() {
+  const storedUser = getStoredUser();
+  if (storedUser) {
+    updateProfileFromAuth(storedUser);
+    hideLogin();
+  } else {
+    showLogin();
+  }
+
+  if (loginForm) {
+    loginForm.addEventListener('submit', handleLoginSubmit);
+  }
+}
+
 // --- Votaciones ---
 const voted = new Set();
-function vote(reviewId, delta) {
-  if (voted.has(reviewId)) return;
-  const review = reviews.find(item => item.id === reviewId);
+async function vote(reviewId, delta) {
+  const key = String(reviewId);
+  if (voted.has(key)) return;
+  const review = reviews.find(item => String(item.id) === key);
   if (!review) return;
-  if (delta > 0) review.up += 1;
-  else review.down += 1;
-  voted.add(reviewId);
-  recomputeRep();
-  renderAll();
+  voted.add(key);
+  try {
+    const { response, payload } = await requestJSON(
+      `${API_BASE}/reviews/${reviewId}/vote`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ delta })
+      }
+    );
+
+    if (!response.ok) {
+      voted.delete(key);
+      console.error('No se pudo registrar el voto', payload?.error);
+      return;
+    }
+
+    review.up = Number(payload?.up) || review.up;
+    review.down = Number(payload?.down) || review.down;
+    recomputeRep();
+    renderAll();
+  } catch (error) {
+    voted.delete(key);
+    console.error('Error al registrar voto', error);
+  }
 }
 window.vote = vote;
 
@@ -684,23 +976,30 @@ function updateModalSelection({ name, address, coords, photo }) {
 }
 
 if (photoFileInput) {
-  photoFileInput.addEventListener('change', () => {
+  photoFileInput.addEventListener('change', async () => {
     const file = photoFileInput.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const dataUrl = reader.result;
+
+    updateAddPlaceStatus('Procesando imagen (máx 720p)...');
+    try {
+      const originalDataUrl = await readFileAsDataURL(file);
+      const optimisedDataUrl = await ensureOptimisedPhoto(originalDataUrl);
+
       if (!modalSelection) modalSelection = {};
       if (!modalSelection.autoPhoto && modalSelection.photo && photoInput.dataset.manual !== 'true') {
         modalSelection.autoPhoto = modalSelection.photo;
       }
-      modalSelection.photo = dataUrl;
+
+      modalSelection.photo = optimisedDataUrl;
       photoInput.value = '';
       photoInput.dataset.manual = 'true';
       photoInput.dataset.auto = 'false';
-      updatePhotoPreview(dataUrl, file.name || placeNameInput?.value || 'Imagen local');
-    };
-    reader.readAsDataURL(file);
+      updatePhotoPreview(optimisedDataUrl, file.name || placeNameInput?.value || 'Imagen local');
+      updateAddPlaceStatus('Imagen optimizada lista para subir.');
+    } catch (error) {
+      console.error('Error al procesar la imagen local:', error);
+      updateAddPlaceStatus('No se pudo procesar la imagen. Intenta con otro archivo.');
+    }
   });
 }
 addPlaceSearchForm?.addEventListener('submit', async event => {
@@ -769,7 +1068,7 @@ function closeCreateModal() {
 window.openCreateModal = openCreateModal;
 window.closeCreateModal = closeCreateModal;
 
-function saveReview() {
+async function saveReview() {
   const placeName = (placeNameInput?.value || '').trim();
   const placeAddress = (placeAddressInput?.value || '').trim();
   const rating = Number(ratingInput?.value || 5);
@@ -789,47 +1088,78 @@ function saveReview() {
     return;
   }
 
+  const currentUser = getStoredUser();
+  if (!currentUser) {
+    updateAddPlaceStatus('Inicia sesion para publicar tu resena.');
+    showLogin();
+    return;
+  }
+
   const baseId = slugify(placeName);
   const placeId = placeById[baseId] ? uniquePlaceId(placeName) : baseId;
   const useManual = photoInput?.dataset.manual === 'true' && manualPhoto;
   const selectionPhoto = modalSelection.photo || autoPhotoFor(placeName || placeAddress);
   const finalPhoto = useManual ? manualPhoto : selectionPhoto;
+  const optimisedPhoto = await ensureOptimisedPhoto(finalPhoto);
 
   const placeData = {
     id: placeId,
     name: placeName,
     address: placeAddress,
     coords: modalSelection.coords,
-    photo: finalPhoto
+    photo: optimisedPhoto
   };
-  PLACES.push(placeData);
-  placeById[placeId] = placeData;
 
-  const review = {
-    id: Date.now(),
-    placeId,
-    city: placeAddress,
+  const reviewData = {
     rating,
-    photo: finalPhoto,
     note,
     tags,
-    userId: 'u1',
-    userName: 'Usuario Demo',
-    me: true,
-    up: 0,
-    down: 0,
-    createdAt: Date.now(),
-    coords: modalSelection.coords
+    photo: optimisedPhoto,
+    city: placeAddress
   };
-  reviews.push(review);
 
-  closeCreateModal();
-  recomputeRep();
-  renderAll();
-  if (mapInstance && review.coords) {
-    mapInstance.flyTo([review.coords.lat, review.coords.lng], 15, { duration: 0.8 });
+  updateAddPlaceStatus('Guardando resena...');
+  try {
+    const { response, payload } = await requestJSON(`${API_BASE}/reviews`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        place: placeData,
+        review: reviewData,
+        userId: currentUser.id
+      })
+    });
+
+    if (!response.ok) {
+      updateAddPlaceStatus(payload?.error || 'No se pudo guardar la resena.');
+      return;
+    }
+
+    if (payload?.place) {
+      upsertPlace(payload.place);
+    }
+
+    if (!payload?.review) {
+      updateAddPlaceStatus('Respuesta inesperada del servidor.');
+      return;
+    }
+
+    const normalized = normalizeReviewEntry(payload.review, currentUser);
+    reviews.push(normalized);
+    refreshReviewOwnership();
+    recomputeRep();
+    renderAll();
+    updateAddPlaceStatus('');
+    modalSelection = null;
+    closeCreateModal();
+    if (mapInstance && normalized?.coords) {
+      mapInstance.flyTo([normalized.coords.lat, normalized.coords.lng], 15, { duration: 0.8 });
+    }
+    document.querySelector('[data-tab="feed"]')?.click();
+  } catch (error) {
+    console.error('Error al crear la resena', error);
+    updateAddPlaceStatus('No se pudo guardar la resena. Intenta nuevamente.');
   }
-  document.querySelector('[data-tab="feed"]')?.click();
 }
 window.saveReview = saveReview;
 
@@ -965,12 +1295,18 @@ function setupFabDrag() {
 }
 
 // --- Inicialización ---
-setupFabDrag();
-recomputeRep();
-renderAll();
-setupMapSearch();
-setupSuggestionInputs();
-initUserLocation();
+async function bootstrap() {
+  setupAuthUI();
+  setupFabDrag();
+  setupMapSearch();
+  setupSuggestionInputs();
+  initUserLocation();
+  await loadInitialData();
+}
+
+bootstrap().catch(error => {
+  console.error('Error al iniciar la aplicacion', error);
+});
 
 
 
