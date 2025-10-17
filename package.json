@@ -19,11 +19,11 @@
   },
   "homepage": "https://github.com/pabloevv/Prueba-1#readme",
   "dependencies": {
-    "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
-    "pg": "^8.16.3",
-    "sharp": "^0.34.4"
+    "firebase": "^12.4.0",
+    "firebase-admin": "^12.5.0",
+    "mongodb": "^6.9.0"
   }
 }

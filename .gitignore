@@ -14,3 +14,4 @@ uploads/
 *.log
 .env
 luggo.db
+firebase-config.js

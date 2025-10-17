@@ -12,19 +12,21 @@
     <div class="login-card">
       <h1>LUGGO</h1>
       <p class="login-note">Inicia sesi&oacute;n para continuar.</p>
+      <button id="loginGoogle" class="btn primary" type="button">Continuar con Google</button>
+      <div class="sp-1"></div>
       <form id="loginForm" class="login-form">
         <div>
-          <label for="loginUsername">Usuario</label>
-          <input id="loginUsername" name="username" placeholder="Tu usuario" autocomplete="username" required />
+          <label for="loginEmail">Correo electr&oacute;nico</label>
+          <input id="loginEmail" name="email" type="email" placeholder="tu@ejemplo.com" autocomplete="email" required />
         </div>
         <div>
           <label for="loginPassword">Contrase&ntilde;a</label>
           <input id="loginPassword" name="password" type="password" placeholder="Contrase&ntilde;a" autocomplete="current-password" required />
         </div>
-        <button type="submit" class="btn primary">Iniciar sesi&oacute;n</button>
-        <div id="loginStatus" class="login-status" role="alert"></div>
+        <button type="submit" class="btn ghost">Ingresar con correo</button>
       </form>
-      <p class="login-note">Demo: <strong>pablo1912</strong> / <strong>1912</strong></p>
+      <div id="loginStatus" class="login-status" role="alert"></div>
+      <p class="login-note">Si no tienes cuenta la crearemos al iniciar sesi&oacute;n.</p>
     </div>
   </div>
   <div class="app">
@@ -79,7 +81,7 @@
                 <div class="muted"><span id="profileHandle">@demo</span> - <span id="profileStats"></span></div>
               </div>
             </div>
-            <button class="btn ghost" onclick="alert('Opciones de perfil (futuro)')">Opciones</button>
+            <button class="btn ghost" onclick="logout()">Cerrar sesi&oacute;n</button>
           </div>
         </div>
         <div class="sp-2"></div>
@@ -171,6 +173,10 @@
       window.__API_BASE_URL__ = isLocalhost && isLiveServer ? tailscaleApi : defaultApi;
     })();
   </script>
+  <script src="firebase-config.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-storage-compat.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

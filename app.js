@@ -60,33 +60,50 @@ function normalizeReviewEntry(rawReview, currentUser) {
     typeof rawReview.createdAt === 'number'
       ? rawReview.createdAt
       : Date.parse(rawReview.createdAt) || Date.now();
-  const belongsToUser = Boolean(user && rawReview.userId === user.id);
-  const resolvedName = rawReview.userName && String(rawReview.userName).trim()
-    ? String(rawReview.userName).trim()
-    : belongsToUser
-    ? (user?.displayName || user?.username || 'Yo')
-    : 'Visitante';
+  const userUid = rawReview.userUid || rawReview.uid || null;
+  const belongsToUser = Boolean(
+    user &&
+      ((userUid && user.uid === userUid) ||
+        (rawReview.userId && user.id && String(user.id) === String(rawReview.userId)))
+  );
+  const resolvedName =
+    rawReview.userName && String(rawReview.userName).trim()
+      ? String(rawReview.userName).trim()
+      : belongsToUser
+      ? user?.displayName || user?.email || 'Yo'
+      : 'Visitante';
+
+  const images = Array.isArray(rawReview.images)
+    ? rawReview.images
+        .map(item => (item && item.url ? { ...item } : null))
+        .filter(Boolean)
+    : [];
+  const fallbackPhoto = place?.photo || '';
+  const photo =
+    rawReview.photo ||
+    (images.length ? images[0].url : '') ||
+    fallbackPhoto;
 
   return {
     id: rawReview.id,
     placeId: rawReview.placeId,
     city: rawReview.city || place?.address || '',
     rating: Number(rawReview.rating) || 0,
-    photo: rawReview.photo || place?.photo || '',
+    photo,
     note: rawReview.note || '',
     tags: Array.isArray(rawReview.tags)
-      ? rawReview.tags
-          .map(tag => String(tag).trim())
-          .filter(Boolean)
+      ? rawReview.tags.map(tag => String(tag).trim()).filter(Boolean)
       : [],
     userId: rawReview.userId ?? null,
+    userUid,
     userName: resolvedName,
     me: belongsToUser,
     up: Number(rawReview.up) || 0,
     down: Number(rawReview.down) || 0,
     createdAt,
     coords,
-    myVote: Number(rawReview.myVote || 0)
+    myVote: Number(rawReview.myVote || 0),
+    images
   };
 }
 
@@ -100,17 +117,75 @@ function setReviews(source, currentUser) {
 function refreshReviewOwnership() {
   const currentUser = getStoredUser();
   reviews.forEach(review => {
-    const isOwner = Boolean(currentUser && review.userId === currentUser.id);
+    const isOwner = Boolean(
+      currentUser &&
+        ((review.userUid && review.userUid === currentUser.uid) ||
+          (review.userId && currentUser.id && String(review.userId) === String(currentUser.id)))
+    );
     review.me = isOwner;
     if (isOwner) {
       review.userName =
-        currentUser.displayName || currentUser.username || review.userName;
+        currentUser.displayName ||
+        currentUser.email ||
+        currentUser.username ||
+        review.userName;
     }
   });
 }
 
-async function requestJSON(url, options = {}) {
-  const response = await fetch(url, options);
+async function getIdToken(forceRefresh = false) {
+  if (!firebaseAuth || !firebaseAuth.currentUser) return null;
+  if (!forceRefresh && cachedIdToken) {
+    return cachedIdToken;
+  }
+  if (!forceRefresh && pendingIdTokenPromise) {
+    return pendingIdTokenPromise;
+  }
+  const promise = firebaseAuth.currentUser.getIdToken(forceRefresh);
+  pendingIdTokenPromise = promise;
+  try {
+    const token = await promise;
+    cachedIdToken = token;
+    return token;
+  } catch (error) {
+    console.error('No se pudo obtener el ID token de Firebase:', error);
+    return null;
+  } finally {
+    pendingIdTokenPromise = null;
+  }
+}
+
+async function requestJSON(url, options = {}, { auth = true } = {}) {
+  const config = { ...options };
+  const originalHeaders = config.headers instanceof Headers
+    ? new Headers(config.headers)
+    : new Headers(config.headers || {});
+
+  if (config.body && !(config.body instanceof FormData) && !originalHeaders.has('Content-Type')) {
+    originalHeaders.set('Content-Type', 'application/json');
+  }
+  originalHeaders.set('Accept', 'application/json');
+
+  async function execute(forceRefreshToken = false) {
+    const headers = new Headers(originalHeaders);
+    if (auth) {
+      const token = await getIdToken(forceRefreshToken);
+      if (token) {
+        headers.set('Authorization', `Bearer ${token}`);
+      } else {
+        headers.delete('Authorization');
+      }
+    }
+    const response = await fetch(url, { ...config, headers });
+    return response;
+  }
+
+  let response = await execute(false);
+  if (auth && response.status === 401 && firebaseAuth?.currentUser) {
+    cachedIdToken = null;
+    response = await execute(true);
+  }
+
   let payload = null;
   try {
     const text = await response.text();
@@ -118,6 +193,7 @@ async function requestJSON(url, options = {}) {
   } catch (parseError) {
     console.warn('No se pudo interpretar la respuesta JSON de', url, parseError);
   }
+
   return { response, payload };
 }
 
@@ -156,8 +232,10 @@ const userRep = new Map();
 function recomputeRep() {
   userRep.clear();
   reviews.forEach(review => {
-    const karma = (userRep.get(review.userId) || 0) + (review.up - review.down);
-    userRep.set(review.userId, karma);
+    const key = review.userUid || review.userId;
+    if (!key) return;
+    const karma = (userRep.get(key) || 0) + (review.up - review.down);
+    userRep.set(key, karma);
   });
 }
 function rankFromKarma(karma) {
@@ -196,12 +274,22 @@ const photoPreview = document.getElementById('photoPreview');
 const loginOverlay = document.getElementById('loginOverlay');
 const loginForm = document.getElementById('loginForm');
 const loginStatus = document.getElementById('loginStatus');
-const loginUsernameInput = document.getElementById('loginUsername');
+const loginEmailInput = document.getElementById('loginEmail');
 const loginPasswordInput = document.getElementById('loginPassword');
+const loginGoogleButton = document.getElementById('loginGoogle');
 
-const AUTH_STORAGE_KEY = 'luggo:auth:v1';
+const AUTH_STORAGE_KEY = 'luggo:auth:v2';
 const API_BASE = window.__API_BASE_URL__ || '/api';
 const MAX_PHOTO_DIMENSION = 720;
+const FIREBASE_CONFIG = window.__FIREBASE_CONFIG__ || null;
+const FIREBASE_STORAGE_ROOT = 'luggo';
+
+let firebaseApp = null;
+let firebaseAuth = null;
+let firebaseStorage = null;
+let authReady = false;
+let cachedIdToken = null;
+let pendingIdTokenPromise = null;
 
 function readFileAsDataURL(file) {
   return new Promise((resolve, reject) => {
@@ -250,6 +338,22 @@ function resizeImageDataUrl(dataUrl, maxDimension = MAX_PHOTO_DIMENSION) {
       }
     };
     image.onerror = () => reject(new Error('No se pudo procesar la imagen seleccionada.'));
+    image.src = dataUrl;
+  });
+}
+
+async function dataUrlToBlob(dataUrl) {
+  const response = await fetch(dataUrl);
+  return response.blob();
+}
+
+function getImageDimensions(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => {
+      resolve({ width: image.width, height: image.height });
+    };
+    image.onerror = () => reject(new Error('No se pudieron obtener las dimensiones de la imagen.'));
     image.src = dataUrl;
   });
 }
@@ -371,9 +475,20 @@ function getStoredUser() {
 
 function setStoredUser(user) {
   if (user) {
-    localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(user));
+    const payload = {
+      uid: user.uid,
+      id: user.id ?? null,
+      displayName: user.displayName || '',
+      email: user.email || '',
+      photoURL: user.photoURL || null,
+      role: user.role || 'usr',
+      stats: user.stats || { reviews: 0 }
+    };
+    localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(payload));
+    updateProfileFromAuth(payload);
   } else {
     localStorage.removeItem(AUTH_STORAGE_KEY);
+    updateProfileFromAuth(null);
   }
 }
 
@@ -386,14 +501,10 @@ function setLoginPending(pending) {
   if (loginForm) {
     loginForm.classList.toggle('pending', pending);
   }
-  [loginUsernameInput, loginPasswordInput].forEach(input => {
+  [loginEmailInput, loginPasswordInput, loginGoogleButton].forEach(input => {
     if (!input) return;
     input.disabled = pending;
   });
-  const submitButton = loginForm?.querySelector('button[type="submit"]');
-  if (submitButton) {
-    submitButton.disabled = pending;
-  }
 }
 
 function hideLogin() {
@@ -409,24 +520,77 @@ function showLogin() {
 }
 
 function updateProfileFromAuth(user) {
-  if (!user) return;
-  if (profileName) {
-    profileName.textContent = user.displayName || user.username;
+  if (!profileName || !profileHandle) return;
+  if (!user) {
+    profileName.textContent = 'Visitante';
+    profileHandle.textContent = '';
+    return;
   }
-  if (profileHandle) {
-    profileHandle.textContent = `@${user.username}`;
+  profileName.textContent = user.displayName || user.email || 'Visitante';
+  const handle = user.email
+    ? user.email
+    : user.uid
+    ? `@${String(user.uid).slice(0, 8)}`
+    : '';
+  profileHandle.textContent = handle;
+  if (profileStats && user.stats?.reviews !== undefined) {
+    const karmaKey = user.uid || user.id;
+    const karma = karmaKey ? userRep.get(karmaKey) || 0 : 0;
+    const rank = rankFromKarma(karma);
+    profileStats.textContent = `${user.stats.reviews} reseñas - Rango: ${rank.label} (${karma})`;
+  }
+}
+
+function mapFirebaseError(error) {
+  const code = error?.code || '';
+  switch (code) {
+    case 'auth/wrong-password':
+      return 'Contraseña incorrecta.';
+    case 'auth/user-not-found':
+      return 'No encontramos tu cuenta. La crearemos si completas los datos.';
+    case 'auth/invalid-email':
+      return 'El correo no es válido.';
+    case 'auth/email-already-in-use':
+      return 'Ya existe una cuenta con este correo.';
+    case 'auth/weak-password':
+      return 'La contraseña debe tener al menos 6 caracteres.';
+    case 'auth/popup-closed-by-user':
+      return 'Cierra la ventana solo después de completar el inicio de sesión.';
+    default:
+      return error?.message || 'No se pudo iniciar sesión.';
+  }
+}
+
+async function ensureBackendSession() {
+  try {
+    const { response, payload } = await requestJSON(
+      `${API_BASE}/auth/session`,
+      { method: 'POST' }
+    );
+    if (response.ok && payload?.user) {
+      setStoredUser(payload.user);
+      refreshReviewOwnership();
+      recomputeRep();
+      renderAll();
+    }
+  } catch (error) {
+    console.error('No se pudo sincronizar la sesión con el backend:', error);
   }
 }
 
 async function handleLoginSubmit(event) {
   event.preventDefault();
-  if (!loginUsernameInput || !loginPasswordInput) return;
+  if (!firebaseAuth) {
+    setLoginError('Firebase no está configurado.');
+    return;
+  }
+  if (!loginEmailInput || !loginPasswordInput) return;
 
-  const username = loginUsernameInput.value.trim();
+  const email = loginEmailInput.value.trim().toLowerCase();
   const password = loginPasswordInput.value;
 
-  if (!username || !password) {
-    setLoginError('Completa usuario y contrase\u00f1a.');
+  if (!email || !password) {
+    setLoginError('Completa correo y contraseña.');
     return;
   }
 
@@ -434,43 +598,112 @@ async function handleLoginSubmit(event) {
   setLoginError('');
 
   try {
-    const response = await fetch(`${API_BASE}/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password })
-    });
-
-    const payload = await response.json().catch(() => ({}));
-
-    if (!response.ok) {
-      setLoginError(payload?.error || 'No se pudo iniciar sesi\u00f3n.');
-      return;
-    }
-
-    const user = payload?.user;
-    if (!user) {
-      setLoginError('Respuesta inesperada del servidor.');
-      return;
-    }
-
-    setStoredUser(user);
-    updateProfileFromAuth(user);
-    hideLogin();
+    await firebaseAuth.signInWithEmailAndPassword(email, password);
     loginPasswordInput.value = '';
-    refreshReviewOwnership();
-    if (dataLoaded) {
-      recomputeRep();
-      renderAll();
-    }
   } catch (error) {
-    console.error('Error al iniciar sesi\u00f3n', error);
-    setLoginError('No se pudo conectar al servidor.');
+    if (error?.code === 'auth/user-not-found') {
+      try {
+        await firebaseAuth.createUserWithEmailAndPassword(email, password);
+        loginPasswordInput.value = '';
+      } catch (createError) {
+        console.error('No se pudo crear la cuenta con correo:', createError);
+        setLoginError(mapFirebaseError(createError));
+      }
+    } else {
+      console.error('Error al iniciar sesión con correo:', error);
+      setLoginError(mapFirebaseError(error));
+    }
   } finally {
     setLoginPending(false);
   }
 }
 
+async function handleGoogleLogin() {
+  if (!firebaseAuth || typeof firebase === 'undefined' || !firebase.auth) {
+    setLoginError('Firebase no está configurado.');
+    return;
+  }
+  setLoginPending(true);
+  setLoginError('');
+  const provider = new firebase.auth.GoogleAuthProvider();
+  try {
+    await firebaseAuth.signInWithPopup(provider);
+  } catch (error) {
+    console.error('No se pudo iniciar sesión con Google:', error);
+    setLoginError(mapFirebaseError(error));
+  } finally {
+    setLoginPending(false);
+  }
+}
+
+async function logout() {
+  try {
+    if (firebaseAuth) {
+      await firebaseAuth.signOut();
+    }
+  } catch (error) {
+    console.error('No se pudo cerrar sesión:', error);
+  } finally {
+    cachedIdToken = null;
+    setStoredUser(null);
+    showLogin();
+    refreshReviewOwnership();
+    recomputeRep();
+    renderAll();
+  }
+}
+window.logout = logout;
+
+async function initFirebase() {
+  if (authReady) return;
+  if (!FIREBASE_CONFIG) {
+    console.warn('No se definió window.__FIREBASE_CONFIG__.');
+    authReady = true;
+    return;
+  }
+  if (typeof firebase === 'undefined') {
+    console.warn('Firebase SDK no está disponible.');
+    authReady = true;
+    return;
+  }
+  firebaseApp = firebase.initializeApp(FIREBASE_CONFIG);
+  firebaseAuth = firebase.auth();
+  firebaseStorage = firebase.storage();
+
+  firebaseAuth.onIdTokenChanged(() => {
+    cachedIdToken = null;
+  });
+
+  firebaseAuth.onAuthStateChanged(async user => {
+    authReady = true;
+    if (!user) {
+      setStoredUser(null);
+      showLogin();
+      refreshReviewOwnership();
+      recomputeRep();
+      renderAll();
+      return;
+    }
+    hideLogin();
+    await ensureBackendSession();
+    if (!dataLoaded) {
+      await loadInitialData(true).catch(() => {});
+    } else {
+      refreshReviewOwnership();
+      recomputeRep();
+      renderAll();
+    }
+  });
+}
+
 function setupAuthUI() {
+  if (loginForm) {
+    loginForm.addEventListener('submit', handleLoginSubmit);
+  }
+  if (loginGoogleButton) {
+    loginGoogleButton.addEventListener('click', handleGoogleLogin);
+  }
+
   const storedUser = getStoredUser();
   if (storedUser) {
     updateProfileFromAuth(storedUser);
@@ -479,9 +712,10 @@ function setupAuthUI() {
     showLogin();
   }
 
-  if (loginForm) {
-    loginForm.addEventListener('submit', handleLoginSubmit);
-  }
+  initFirebase().catch(error => {
+    console.error('No se pudo inicializar Firebase:', error);
+    setLoginError('Revisa la configuración de Firebase.');
+  });
 }
 
 // --- Votaciones ---
@@ -491,6 +725,11 @@ async function vote(reviewId, delta) {
   if (voteLocks.has(key)) return;
   const review = reviews.find(item => String(item.id) === key);
   if (!review) return;
+
+  if (!firebaseAuth?.currentUser) {
+    showLogin();
+    return;
+  }
 
   const previousVote = Number(review.myVote || 0);
   let nextVote = delta;
@@ -505,8 +744,7 @@ async function vote(reviewId, delta) {
       `${API_BASE}/reviews/${reviewId}/vote`,
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ delta: nextVote, previous: previousVote })
+        body: JSON.stringify({ value: nextVote })
       }
     );
 
@@ -551,7 +789,7 @@ function reviewCardHTML(review) {
   const safeSrc = escapeAttr(imageSrc);
   const safeAlt = escapeAttr(placeName);
   const fallbackSrc = escapeAttr(placeholder);
-  const karma = userRep.get(review.userId) || 0;
+  const karma = userRep.get(review.userUid || review.userId) || 0;
   const rank = rankFromKarma(karma);
   const likeActive = review.myVote === 1 ? 'active' : '';
   const dislikeActive = review.myVote === -1 ? 'active' : '';
@@ -582,11 +820,11 @@ function reviewCardHTML(review) {
         <div class="row">
           <div>${tags}</div>
           <div class="vote">
-            <button class="${likeActive}" data-vote="up" onclick="vote(${review.id}, 1)" aria-pressed="${review.myVote === 1}" aria-label="Me gusta">
+            <button class="${likeActive}" data-vote="up" onclick="vote('${escapeAttr(String(review.id))}', 1)" aria-pressed="${review.myVote === 1}" aria-label="Me gusta">
               <span class="icon">👍</span>
               <span class="count">${review.up}</span>
             </button>
-            <button class="${dislikeActive}" data-vote="down" onclick="vote(${review.id}, -1)" aria-pressed="${review.myVote === -1}" aria-label="No me gusta">
+            <button class="${dislikeActive}" data-vote="down" onclick="vote('${escapeAttr(String(review.id))}', -1)" aria-pressed="${review.myVote === -1}" aria-label="No me gusta">
               <span class="icon">👎</span>
               <span class="count">${review.down}</span>
             </button>
@@ -604,8 +842,8 @@ function renderFeed() {
 function renderProfile() {
   const mine = applyFilter(reviews.filter(review => review.me)).sort((a, b) => b.createdAt - a.createdAt);
   if (profileList) profileList.innerHTML = mine.map(reviewCardHTML).join('');
-  const myId = mine[0]?.userId || 'u1';
-  const karma = userRep.get(myId) || 0;
+  const myKey = mine[0]?.userUid || mine[0]?.userId || 'self';
+  const karma = userRep.get(myKey) || 0;
   const rank = rankFromKarma(karma);
   if (profileStats) profileStats.textContent = `${mine.length} reseñas - Rango: ${rank.label} (${karma})`;
 }
@@ -934,8 +1172,9 @@ function ensureModalMap() {
 
 function updateModalSelection({ name, address, coords, photo }) {
   const previous = modalSelection || {};
-  const autoPhoto = photo ?? previous.autoPhoto ?? previous.photo ?? null;
-  const manualEntry = photoInput?.dataset.manual === 'true';
+  const autoPhoto = photo ?? previous.autoPhoto ?? null;
+  const manualPhoto = previous.manualPhoto || '';
+  const hasManual = Boolean(manualPhoto);
 
   modalSelection = {
     ...previous,
@@ -943,13 +1182,28 @@ function updateModalSelection({ name, address, coords, photo }) {
     address: address ?? previous.address ?? '',
     coords: coords ?? previous.coords ?? null,
     autoPhoto,
-    photo: manualEntry ? (previous.photo ?? autoPhoto) : autoPhoto
+    manualPhoto,
+    photo: hasManual
+      ? manualPhoto
+      : previous.uploadBlob
+      ? previous.photo
+      : autoPhoto || '',
+    uploadBlob: hasManual ? null : previous.uploadBlob ?? null,
+    uploadMeta: hasManual ? null : previous.uploadMeta ?? null,
+    uploadFileName: hasManual ? null : previous.uploadFileName ?? null
   };
+
+  if (photo !== undefined && !hasManual) {
+    modalSelection.photo = autoPhoto || '';
+    modalSelection.uploadBlob = null;
+    modalSelection.uploadMeta = null;
+    modalSelection.uploadFileName = null;
+  }
 
   if (placeNameInput && modalSelection.name) placeNameInput.value = modalSelection.name;
   if (placeAddressInput && modalSelection.address) placeAddressInput.value = modalSelection.address;
 
-  if (photoInput && !manualEntry) {
+  if (photoInput && !hasManual) {
     if (modalSelection.photo) {
       photoInput.value = modalSelection.photo;
       photoInput.dataset.auto = 'true';
@@ -959,41 +1213,41 @@ function updateModalSelection({ name, address, coords, photo }) {
     }
   }
 
-  if (!manualEntry || !modalSelection.photo) {
+  if (!hasManual || !modalSelection.photo) {
     updatePhotoPreview(modalSelection.photo, modalSelection.name || 'Vista previa');
   }
 
   if (modalSelection.coords) {
-    updateAddPlaceStatus(`Lugar seleccionado: ${modalSelection.coords.lat.toFixed(5)}, ${modalSelection.coords.lng.toFixed(5)}`);
+    const { lat, lng } = modalSelection.coords;
+    updateAddPlaceStatus(`Lugar seleccionado: ${lat.toFixed(5)}, ${lng.toFixed(5)}`);
   }
-}if (photoInput) {
+}
+
+if (photoInput) {
   photoInput.dataset.manual = 'false';
   photoInput.dataset.auto = 'false';
   photoInput.addEventListener('input', () => {
     const value = photoInput.value.trim();
     if (!modalSelection) modalSelection = {};
     if (value) {
-      if (!modalSelection.autoPhoto && modalSelection.photo && photoInput.dataset.manual !== 'true') {
-        modalSelection.autoPhoto = modalSelection.photo;
-      }
+      modalSelection.manualPhoto = value;
+      modalSelection.photo = value;
+      modalSelection.uploadBlob = null;
+      modalSelection.uploadMeta = null;
+      modalSelection.uploadFileName = null;
       photoInput.dataset.manual = 'true';
       photoInput.dataset.auto = 'false';
-      modalSelection.photo = value;
       if (photoFileInput) photoFileInput.value = '';
       updatePhotoPreview(value, placeNameInput?.value || 'Imagen personalizada');
     } else {
+      modalSelection.manualPhoto = '';
+      modalSelection.photo = modalSelection.autoPhoto || '';
       photoInput.dataset.manual = 'false';
-      modalSelection.photo = modalSelection.autoPhoto || null;
-      if (modalSelection.photo) {
-        photoInput.dataset.auto = 'true';
-      } else {
-        photoInput.dataset.auto = 'false';
-      }
+      photoInput.dataset.auto = modalSelection.photo ? 'true' : 'false';
       updatePhotoPreview(modalSelection.photo, modalSelection.name || 'Vista previa');
     }
   });
 }
-
 if (photoFileInput) {
   photoFileInput.addEventListener('change', async () => {
     const file = photoFileInput.files?.[0];
@@ -1003,15 +1257,22 @@ if (photoFileInput) {
     try {
       const originalDataUrl = await readFileAsDataURL(file);
       const optimisedDataUrl = await ensureOptimisedPhoto(originalDataUrl);
-
       if (!modalSelection) modalSelection = {};
-      if (!modalSelection.autoPhoto && modalSelection.photo && photoInput.dataset.manual !== 'true') {
-        modalSelection.autoPhoto = modalSelection.photo;
-      }
-
+      const blob = await dataUrlToBlob(optimisedDataUrl);
+      const dimensions = await getImageDimensions(optimisedDataUrl);
+      modalSelection.manualPhoto = '';
+      modalSelection.autoPhoto = modalSelection.autoPhoto || modalSelection.photo || '';
       modalSelection.photo = optimisedDataUrl;
+      modalSelection.uploadBlob = blob;
+      modalSelection.uploadMeta = {
+        width: dimensions.width,
+        height: dimensions.height,
+        size: blob.size,
+        contentType: blob.type || 'image/webp'
+      };
+      modalSelection.uploadFileName = `foto-${Date.now()}.webp`;
       photoInput.value = '';
-      photoInput.dataset.manual = 'true';
+      photoInput.dataset.manual = 'false';
       photoInput.dataset.auto = 'false';
       updatePhotoPreview(optimisedDataUrl, file.name || placeNameInput?.value || 'Imagen local');
       updateAddPlaceStatus('Imagen optimizada lista para subir.');
@@ -1021,6 +1282,7 @@ if (photoFileInput) {
     }
   });
 }
+
 addPlaceSearchForm?.addEventListener('submit', async event => {
   event.preventDefault();
   const query = addPlaceSearchInput?.value.trim();
@@ -1109,48 +1371,93 @@ async function saveReview() {
 
   const currentUser = getStoredUser();
   if (!currentUser) {
-    updateAddPlaceStatus('Inicia sesion para publicar tu resena.');
+    updateAddPlaceStatus('Inicia sesion para publicar tu reseña.');
     showLogin();
+    return;
+  }
+
+  if (!firebaseAuth?.currentUser || !firebaseStorage) {
+    updateAddPlaceStatus('Firebase no está configurado correctamente.');
     return;
   }
 
   const baseId = slugify(placeName);
   const placeId = placeById[baseId] ? uniquePlaceId(placeName) : baseId;
   const useManual = photoInput?.dataset.manual === 'true' && manualPhoto;
-  const selectionPhoto = modalSelection.photo || autoPhotoFor(placeName || placeAddress);
-  const finalPhoto = useManual ? manualPhoto : selectionPhoto;
-  const optimisedPhoto = await ensureOptimisedPhoto(finalPhoto);
+  const selectionPhoto = modalSelection.photo || modalSelection.autoPhoto || autoPhotoFor(placeName || placeAddress);
+  let primaryPhotoUrl = useManual ? manualPhoto : selectionPhoto || '';
+  const imageIds = [];
+
+  if (modalSelection.uploadBlob) {
+    updateAddPlaceStatus('Subiendo imagen a Firebase...');
+    try {
+      const uid = firebaseAuth.currentUser.uid;
+      const extension = (modalSelection.uploadMeta?.contentType || 'image/webp').includes('png') ? 'png' : 'webp';
+      const fileName = `${Date.now()}-${Math.random().toString(36).slice(2)}.${extension}`;
+      const storageRef = firebaseStorage
+        .ref()
+        .child(`${FIREBASE_STORAGE_ROOT}/${uid}/${fileName}`);
+      await storageRef.put(modalSelection.uploadBlob, {
+        contentType: modalSelection.uploadMeta?.contentType || 'image/webp',
+        cacheControl: 'public,max-age=31536000'
+      });
+      primaryPhotoUrl = await storageRef.getDownloadURL();
+
+      updateAddPlaceStatus('Guardando metadatos de la imagen...');
+      const { response: imageResponse, payload: imagePayload } = await requestJSON(
+        `${API_BASE}/images`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            u: primaryPhotoUrl,
+            w: modalSelection.uploadMeta?.width,
+            h: modalSelection.uploadMeta?.height,
+            s: modalSelection.uploadMeta?.size,
+            pv: 'fb'
+          })
+        }
+      );
+
+      if (!imageResponse.ok) {
+        updateAddPlaceStatus(imagePayload?.error || 'No se pudo guardar la imagen.');
+        return;
+      }
+
+      if (imagePayload?.image?.id) {
+        imageIds.push(imagePayload.image.id);
+      }
+    } catch (error) {
+      console.error('No se pudo subir la imagen a Firebase:', error);
+      updateAddPlaceStatus('No se pudo subir la imagen. Intenta nuevamente.');
+      return;
+    }
+  }
 
   const placeData = {
     id: placeId,
     name: placeName,
     address: placeAddress,
     coords: modalSelection.coords,
-    photo: optimisedPhoto
+    photo: primaryPhotoUrl || selectionPhoto || ''
   };
 
-  const reviewData = {
-    rating,
-    note,
-    tags,
-    photo: optimisedPhoto,
-    city: placeAddress
-  };
-
-  updateAddPlaceStatus('Guardando resena...');
+  updateAddPlaceStatus('Guardando reseña...');
   try {
     const { response, payload } = await requestJSON(`${API_BASE}/reviews`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         place: placeData,
-        review: reviewData,
-        userId: currentUser.id
+        rating,
+        note,
+        tags,
+        city: placeAddress,
+        imageIds,
+        photo: primaryPhotoUrl
       })
     });
 
     if (!response.ok) {
-      updateAddPlaceStatus(payload?.error || 'No se pudo guardar la resena.');
+      updateAddPlaceStatus(payload?.error || 'No se pudo guardar la reseña.');
       return;
     }
 
@@ -1176,8 +1483,8 @@ async function saveReview() {
     }
     document.querySelector('[data-tab="feed"]')?.click();
   } catch (error) {
-    console.error('Error al crear la resena', error);
-    updateAddPlaceStatus('No se pudo guardar la resena. Intenta nuevamente.');
+    console.error('Error al crear la reseña', error);
+    updateAddPlaceStatus('No se pudo guardar la reseña. Intenta nuevamente.');
   }
 }
 window.saveReview = saveReview;
