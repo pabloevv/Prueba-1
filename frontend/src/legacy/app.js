@@ -1630,9 +1630,16 @@ async function bootstrap() {
   await loadInitialData();
 }
 
-bootstrap().catch(error => {
-  console.error('Error al iniciar la aplicacion', error);
-});
+bootstrap()
+  .then(() => {
+    if (typeof window !== 'undefined') {
+      window.__LUGGO_LEGACY_INITIALIZED__ = true;
+    }
+  })
+  .catch(error => {
+    console.error('Error al iniciar la aplicacion', error);
+  });
+
 
 
 

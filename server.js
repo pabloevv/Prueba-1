@@ -1,5 +1,6 @@
-const path = require('node:path');
+﻿const path = require('node:path');
 const crypto = require('node:crypto');
+const fs = require('node:fs');
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
@@ -10,7 +11,8 @@ dotenv.config();
 
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
-const STATIC_DIR = process.env.STATIC_DIR ? path.resolve(process.env.STATIC_DIR) : __dirname;
+const DEFAULT_STATIC_DIR = path.join(__dirname, 'frontend', 'dist');
+const STATIC_DIR = process.env.STATIC_DIR ? path.resolve(process.env.STATIC_DIR) : DEFAULT_STATIC_DIR;
 
 const MONGODB_URI = process.env.MONGODB_URI;
 const MONGODB_DB_NAME = process.env.MONGODB_DB_NAME || 'luggo';
@@ -32,7 +34,7 @@ if (!firebaseProjectId || !firebaseClientEmail || !firebasePrivateKey) {
   console.error(
     [
       'Faltan variables de entorno de Firebase.',
-      'Asegúrate de definir FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL y FIREBASE_PRIVATE_KEY.'
+      'AsegÃºrate de definir FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL y FIREBASE_PRIVATE_KEY.'
     ].join(' ')
   );
   process.exit(1);
@@ -60,7 +62,7 @@ const collectionsCache = new Map();
 
 function getCollection(name) {
   if (!mongoDb) {
-    throw new Error('MongoDB no se ha inicializado todavía.');
+    throw new Error('MongoDB no se ha inicializado todavÃ­a.');
   }
   if (!collectionsCache.has(name)) {
     collectionsCache.set(name, mongoDb.collection(name));
@@ -306,7 +308,7 @@ async function optionalAuth(req) {
     const userDoc = await users.findOne({ uid: decoded.uid });
     return { decoded, userDoc };
   } catch (error) {
-    console.warn('Token de Firebase inválido (ignorado):', error.message);
+    console.warn('Token de Firebase invÃ¡lido (ignorado):', error.message);
     return null;
   }
 }
@@ -326,7 +328,7 @@ async function requireAuth(req, res, next) {
     req.userDoc = await ensureUserDocument(decoded);
     return next();
   } catch (error) {
-    console.error('Error en autenticación:', error);
+    console.error('Error en autenticaciÃ³n:', error);
     return res.status(401).json({ error: 'invalid_token' });
   }
 }
@@ -625,7 +627,7 @@ app.get('/api/reviews', async (req, res) => {
 
     res.json({ reviews: payload });
   } catch (error) {
-    console.error('Error al listar reseñas:', error);
+    console.error('Error al listar reseÃ±as:', error);
     res.status(500).json({ error: 'no_se_pudieron_obtener_las_resenas' });
   }
 });
@@ -773,7 +775,7 @@ app.post('/api/reviews', requireAuth, async (req, res) => {
       place: responsePlace
     });
   } catch (error) {
-    console.error('Error al crear la reseña:', error);
+    console.error('Error al crear la reseÃ±a:', error);
     res.status(500).json({ error: 'no_se_pudo_guardar_la_resena' });
   }
 });
@@ -953,7 +955,11 @@ app.get('/api/nearby-geojson', async (req, res) => {
   }
 });
 
-app.use(express.static(STATIC_DIR));
+if (fs.existsSync(STATIC_DIR)) {
+  app.use(express.static(STATIC_DIR));
+} else {
+  console.warn('Directorio estatico no encontrado:', STATIC_DIR);
+}
 
 app.use((req, res, next) => {
   if (req.method !== 'GET') {
@@ -963,7 +969,7 @@ app.use((req, res, next) => {
   if (requested.startsWith('/api') || requested === '/health') {
     return next();
   }
-  return res.sendFile(path.join(STATIC_DIR, 'BETA.html'), error => {
+  return res.sendFile(path.join(STATIC_DIR, 'index.html'), error => {
     if (error) {
       next();
     }
@@ -980,7 +986,7 @@ async function startServer() {
       console.log(`API y frontend disponibles en ${localUrl}`);
     });
   } catch (error) {
-    console.error('No se pudo inicializar la aplicación:', error);
+    console.error('No se pudo inicializar la aplicaciÃ³n:', error);
     process.exit(1);
   }
 }
@@ -997,3 +1003,12 @@ async function gracefulShutdown() {
 
 process.on('SIGINT', gracefulShutdown);
 process.on('SIGTERM', gracefulShutdown);
+
+
+
+
+
+
+
+
+
