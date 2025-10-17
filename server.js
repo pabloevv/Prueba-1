@@ -22,12 +22,51 @@ if (!MONGODB_URI) {
   process.exit(1);
 }
 
+function normalizeStorageBucket(rawBucket) {
+  if (!rawBucket) return undefined;
+  const trimmed = String(rawBucket).trim();
+  if (!trimmed) return undefined;
+  if (trimmed.endsWith('.firebaseapp.com')) {
+    return trimmed.replace(/\.firebaseapp\.com$/, '.firebasestorage.app');
+  }
+  if (trimmed.endsWith('.firebasestorage.app')) {
+    return trimmed;
+  }
+  return trimmed;
+}
+
+function resolveFirebasePrivateKey() {
+  const base64Key = process.env.FIREBASE_PRIVATE_KEY_BASE64;
+  if (base64Key && base64Key.trim()) {
+    try {
+      const decoded = Buffer.from(base64Key.trim(), 'base64').toString('utf8');
+      if (decoded.includes('-----BEGIN')) {
+        return decoded.replace(/\r/g, '');
+      }
+      console.warn('FIREBASE_PRIVATE_KEY_BASE64 presente pero no parece contener una clave PEM válida.');
+    } catch (error) {
+      console.warn('No se pudo decodificar FIREBASE_PRIVATE_KEY_BASE64:', error.message);
+    }
+  }
+
+  const raw = process.env.FIREBASE_PRIVATE_KEY;
+  if (raw && raw.trim()) {
+    return raw.trim().replace(/\\n/g, '\n').replace(/\r/g, '');
+  }
+
+  return null;
+}
+
 const firebaseProjectId = process.env.FIREBASE_PROJECT_ID;
 const firebaseClientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-let firebasePrivateKey = process.env.FIREBASE_PRIVATE_KEY;
+const firebasePrivateKey = resolveFirebasePrivateKey();
+const rawStorageBucket = process.env.FIREBASE_STORAGE_BUCKET;
+const firebaseStorageBucket = normalizeStorageBucket(rawStorageBucket);
 
-if (firebasePrivateKey) {
-  firebasePrivateKey = firebasePrivateKey.replace(/\\n/g, '\n');
+if (rawStorageBucket && firebaseStorageBucket && firebaseStorageBucket !== rawStorageBucket.trim()) {
+  console.warn(
+    `FIREBASE_STORAGE_BUCKET normalizado a "${firebaseStorageBucket}". Actualiza tu .env para evitar este mensaje.`
+  );
 }
 
 if (!firebaseProjectId || !firebaseClientEmail || !firebasePrivateKey) {
@@ -47,8 +86,13 @@ if (!firebaseAdmin.apps.length) {
       clientEmail: firebaseClientEmail,
       privateKey: firebasePrivateKey
     }),
-    storageBucket: process.env.FIREBASE_STORAGE_BUCKET || undefined
+    storageBucket: firebaseStorageBucket
   });
+  if (!firebaseStorageBucket && process.env.FIREBASE_STORAGE_BUCKET) {
+    console.warn(
+      'FIREBASE_STORAGE_BUCKET no está definido correctamente; se omitió la configuración del bucket.'
+    );
+  }
 }
 
 const mongoClient = new MongoClient(MONGODB_URI, {
@@ -1003,6 +1047,7 @@ async function gracefulShutdown() {
 
 process.on('SIGINT', gracefulShutdown);
 process.on('SIGTERM', gracefulShutdown);
+
 
 
 

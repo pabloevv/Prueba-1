@@ -7,15 +7,43 @@ function App() {
       return undefined;
     }
 
+    const envApiBase =
+      (import.meta.env?.VITE_API_BASE_URL || import.meta.env?.VITE_API_BASE || "").trim();
+    const tailscaleHint = (import.meta.env?.VITE_TAILSCALE_API_BASE || "").trim();
+    const localOverride = window.localStorage.getItem("luggo:apiBaseOverride")?.trim() || "";
+
     if (!window.__API_BASE_URL__) {
-      const tailscaleApi = "http://100.117.52.45:3000/api";
       const defaultApi = `${window.location.origin}/api`;
       const hostname = window.location.hostname;
-      const port = window.location.port || "";
       const isLocalhost = hostname === "localhost" || hostname === "127.0.0.1";
-      const isLiveServer = port === "5500";
-      window.__API_BASE_URL__ = isLocalhost && isLiveServer ? tailscaleApi : defaultApi;
+      const looksLikeTailScale = hostname.endsWith(".ts.net") || hostname.startsWith("100.");
+
+      let resolvedBase = envApiBase || localOverride;
+
+      if (!resolvedBase) {
+        if (isLocalhost && tailscaleHint) {
+          const base = tailscaleHint.replace(/\/+$/, "");
+          resolvedBase = base.endsWith("/api") ? base : `${base}/api`;
+        } else if (looksLikeTailScale) {
+          resolvedBase = defaultApi;
+        } else {
+          resolvedBase = defaultApi;
+        }
+      }
+
+      window.__API_BASE_URL__ = resolvedBase;
     }
+
+    window.__setApiBaseOverride__ = nextBase => {
+      if (typeof nextBase !== "string") return;
+      const trimmed = nextBase.trim();
+      if (trimmed) {
+        window.localStorage.setItem("luggo:apiBaseOverride", trimmed);
+      } else {
+        window.localStorage.removeItem("luggo:apiBaseOverride");
+      }
+      window.location.reload();
+    };
 
     let cancelled = false;
     const loadLegacyApp = async () => {

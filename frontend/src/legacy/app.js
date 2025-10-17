@@ -281,7 +281,31 @@ const loginGoogleButton = document.getElementById('loginGoogle');
 const AUTH_STORAGE_KEY = 'luggo:auth:v2';
 const API_BASE = window.__API_BASE_URL__ || '/api';
 const MAX_PHOTO_DIMENSION = 720;
-const FIREBASE_CONFIG = window.__FIREBASE_CONFIG__ || null;
+
+function normalizeStorageBucketName(bucket) {
+  if (!bucket || typeof bucket !== 'string') return bucket;
+  const trimmed = bucket.trim();
+  if (!trimmed) return trimmed;
+  if (trimmed.endsWith('.firebaseapp.com')) {
+    return trimmed.replace(/\.firebaseapp\.com$/, '.firebasestorage.app');
+  }
+  if (trimmed.endsWith('.firebasestorage.app')) {
+    return trimmed;
+  }
+  return trimmed;
+}
+
+const FIREBASE_CONFIG = (() => {
+  if (!window.__FIREBASE_CONFIG__) return null;
+  const config = { ...window.__FIREBASE_CONFIG__ };
+  const normalizedBucket = normalizeStorageBucketName(config.storageBucket);
+  if (normalizedBucket && normalizedBucket !== config.storageBucket) {
+    config.storageBucket = normalizedBucket;
+    window.__FIREBASE_CONFIG__.storageBucket = normalizedBucket;
+  }
+  return config;
+})();
+
 const FIREBASE_STORAGE_ROOT = 'luggo';
 
 let firebaseApp = null;
@@ -668,7 +692,20 @@ async function initFirebase() {
   }
   firebaseApp = firebase.initializeApp(FIREBASE_CONFIG);
   firebaseAuth = firebase.auth();
-  firebaseStorage = firebase.storage();
+  const storageBucketName =
+    typeof FIREBASE_CONFIG.storageBucket === 'string' && FIREBASE_CONFIG.storageBucket.trim()
+      ? FIREBASE_CONFIG.storageBucket.trim()
+      : null;
+  if (storageBucketName) {
+    try {
+      firebaseStorage = firebase.app().storage(`gs://${storageBucketName}`);
+    } catch (error) {
+      console.warn('No se pudo inicializar Firebase Storage con el bucket especificado:', error);
+      firebaseStorage = firebase.storage();
+    }
+  } else {
+    firebaseStorage = firebase.storage();
+  }
 
   firebaseAuth.onIdTokenChanged(() => {
     cachedIdToken = null;
@@ -1428,7 +1465,14 @@ async function saveReview() {
       }
     } catch (error) {
       console.error('No se pudo subir la imagen a Firebase:', error);
-      updateAddPlaceStatus('No se pudo subir la imagen. Intenta nuevamente.');
+      const friendlyMessage =
+        typeof error?.message === 'string' && error.message.trim()
+          ? error.message.trim()
+          : 'Intenta nuevamente.';
+      const errorCode = typeof error?.code === 'string' ? error.code : null;
+      updateAddPlaceStatus(
+        errorCode ? `No se pudo subir la imagen (${errorCode}). ${friendlyMessage}` : `No se pudo subir la imagen. ${friendlyMessage}`
+      );
       return;
     }
   }

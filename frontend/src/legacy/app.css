@@ -29,7 +29,7 @@ body {
 .app {
   max-width: 480px;
   margin: 0 auto;
-  min-height: 100%;
+  min-height: 100vh;
   display: flex;
   flex-direction: column;
 }
@@ -90,6 +90,7 @@ header {
 
 main {
   flex: 1;
+  padding-bottom: calc(4.75rem + env(safe-area-inset-bottom, 0px));
 }
 
 .screen {
@@ -245,15 +246,25 @@ main {
 }
 
 nav.tabbar {
-  position: sticky;
+  position: fixed;
+  left: 0;
+  right: 0;
   bottom: 0;
+  width: 100%;
   background: #0b1024;
   border-top: 1px solid rgba(255, 255, 255, 0.06);
+  z-index: 20;
+  padding: 0.35rem 0.5rem calc(env(safe-area-inset-bottom, 0px) + 0.35rem);
+  display: flex;
+  justify-content: center;
 }
 
 .tabs {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
+  width: 100%;
+  max-width: 480px;
+  margin: 0 auto;
 }
 
 .tabs button {
