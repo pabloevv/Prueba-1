@@ -277,6 +277,8 @@ const loginStatus = document.getElementById('loginStatus');
 const loginEmailInput = document.getElementById('loginEmail');
 const loginPasswordInput = document.getElementById('loginPassword');
 const loginGoogleButton = document.getElementById('loginGoogle');
+const saveReviewButton = document.getElementById('saveReviewButton');
+const SAVE_REVIEW_BUTTON_DEFAULT_LABEL = saveReviewButton?.textContent?.trim() || 'Guardar';
 
 const AUTH_STORAGE_KEY = 'luggo:auth:v2';
 const API_BASE = window.__API_BASE_URL__ || '/api';
@@ -830,6 +832,10 @@ function reviewCardHTML(review) {
   const rank = rankFromKarma(karma);
   const likeActive = review.myVote === 1 ? 'active' : '';
   const dislikeActive = review.myVote === -1 ? 'active' : '';
+  const upCount = Number.isFinite(review.up) ? review.up : 0;
+  const downCount = Number.isFinite(review.down) ? review.down : 0;
+  const likeAriaLabel = `Me gusta (${upCount})`;
+  const dislikeAriaLabel = `No me gusta (${downCount})`;
   return `
     <article class="card">
       <div class="media">
@@ -857,13 +863,13 @@ function reviewCardHTML(review) {
         <div class="row">
           <div>${tags}</div>
           <div class="vote">
-            <button class="${likeActive}" data-vote="up" onclick="vote('${escapeAttr(String(review.id))}', 1)" aria-pressed="${review.myVote === 1}" aria-label="Me gusta">
-              <span class="icon">👍</span>
-              <span class="count">${review.up}</span>
+            <button class="${likeActive}" data-vote="up" onclick="vote('${escapeAttr(String(review.id))}', 1)" aria-pressed="${review.myVote === 1}" aria-label="${escapeAttr(likeAriaLabel)}">
+              <span class="icon" aria-hidden="true">&#128077;</span>
+              <span class="count">${upCount}</span>
             </button>
-            <button class="${dislikeActive}" data-vote="down" onclick="vote('${escapeAttr(String(review.id))}', -1)" aria-pressed="${review.myVote === -1}" aria-label="No me gusta">
-              <span class="icon">👎</span>
-              <span class="count">${review.down}</span>
+            <button class="${dislikeActive}" data-vote="down" onclick="vote('${escapeAttr(String(review.id))}', -1)" aria-pressed="${review.myVote === -1}" aria-label="${escapeAttr(dislikeAriaLabel)}">
+              <span class="icon" aria-hidden="true">&#128078;</span>
+              <span class="count">${downCount}</span>
             </button>
           </div>
         </div>
@@ -1226,9 +1232,18 @@ function setupMapSearch() {
 let modalMap = null;
 let modalMarker = null;
 let modalSelection = null;
+let isSavingReview = false;
 
 function updateAddPlaceStatus(message) {
   if (addPlaceStatus) addPlaceStatus.textContent = message || '';
+}
+
+function setSaveReviewPending(pending) {
+  isSavingReview = pending;
+  if (saveReviewButton) {
+    saveReviewButton.disabled = pending;
+    saveReviewButton.textContent = pending ? 'Guardando...' : SAVE_REVIEW_BUTTON_DEFAULT_LABEL;
+  }
 }
 
 function ensureModalMap() {
@@ -1405,6 +1420,7 @@ addPlaceSearchForm?.addEventListener('submit', async event => {
 const modal = document.getElementById('modal');
 
 function resetModalFields() {
+  setSaveReviewPending(false);
   if (placeNameInput) placeNameInput.value = '';
   if (placeAddressInput) placeAddressInput.value = '';
   if (ratingInput) ratingInput.value = '5';
@@ -1472,75 +1488,91 @@ async function saveReview() {
     return;
   }
 
+  if (isSavingReview) {
+    return;
+  }
+
   const baseId = slugify(placeName);
   const placeId = placeById[baseId] ? uniquePlaceId(placeName) : baseId;
   const useManual = photoInput?.dataset.manual === 'true' && manualPhoto;
   const selectionPhoto = modalSelection.photo || modalSelection.autoPhoto || autoPhotoFor(placeName || placeAddress);
   let primaryPhotoUrl = useManual ? manualPhoto : selectionPhoto || '';
   const imageIds = [];
+  let metadataSaved = true;
 
-  if (modalSelection.uploadBlob) {
-    updateAddPlaceStatus('Subiendo imagen a Firebase...');
-    try {
-      const uid = firebaseAuth.currentUser.uid;
-      const extension = (modalSelection.uploadMeta?.contentType || 'image/webp').includes('png') ? 'png' : 'webp';
-      const fileName = `${Date.now()}-${Math.random().toString(36).slice(2)}.${extension}`;
-      const storageRef = firebaseStorage
-        .ref()
-        .child(`${FIREBASE_STORAGE_ROOT}/${uid}/${fileName}`);
-      await storageRef.put(modalSelection.uploadBlob, {
-        contentType: modalSelection.uploadMeta?.contentType || 'image/webp',
-        cacheControl: 'public,max-age=31536000'
-      });
-      primaryPhotoUrl = await storageRef.getDownloadURL();
+  setSaveReviewPending(true);
+  updateAddPlaceStatus('Preparando reseña...');
 
-      updateAddPlaceStatus('Guardando metadatos de la imagen...');
-      const { response: imageResponse, payload: imagePayload } = await requestJSON(
-        `${API_BASE}/images`,
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            u: primaryPhotoUrl,
-            w: modalSelection.uploadMeta?.width,
-            h: modalSelection.uploadMeta?.height,
-            s: modalSelection.uploadMeta?.size,
-            pv: 'fb'
-          })
-        }
-      );
-
-      if (!imageResponse.ok) {
-        updateAddPlaceStatus(imagePayload?.error || 'No se pudo guardar la imagen.');
-        return;
-      }
-
-      if (imagePayload?.image?.id) {
-        imageIds.push(imagePayload.image.id);
-      }
-    } catch (error) {
-      console.error('No se pudo subir la imagen a Firebase:', error);
-      const friendlyMessage =
-        typeof error?.message === 'string' && error.message.trim()
-          ? error.message.trim()
-          : 'Intenta nuevamente.';
-      const errorCode = typeof error?.code === 'string' ? error.code : null;
-      updateAddPlaceStatus(
-        errorCode ? `No se pudo subir la imagen (${errorCode}). ${friendlyMessage}` : `No se pudo subir la imagen. ${friendlyMessage}`
-      );
-      return;
-    }
-  }
-
-  const placeData = {
-    id: placeId,
-    name: placeName,
-    address: placeAddress,
-    coords: modalSelection.coords,
-    photo: primaryPhotoUrl || selectionPhoto || ''
-  };
-
-  updateAddPlaceStatus('Guardando reseña...');
   try {
+    if (modalSelection.uploadBlob) {
+      updateAddPlaceStatus('Subiendo imagen a Firebase...');
+      try {
+        const uid = firebaseAuth.currentUser.uid;
+        const extension = (modalSelection.uploadMeta?.contentType || 'image/webp').includes('png') ? 'png' : 'webp';
+        const fileName = `${Date.now()}-${Math.random().toString(36).slice(2)}.${extension}`;
+        const storageRef = firebaseStorage
+          .ref()
+          .child(`${FIREBASE_STORAGE_ROOT}/${uid}/${fileName}`);
+        await storageRef.put(modalSelection.uploadBlob, {
+          contentType: modalSelection.uploadMeta?.contentType || 'image/webp',
+          cacheControl: 'public,max-age=31536000'
+        });
+        primaryPhotoUrl = await storageRef.getDownloadURL();
+        modalSelection.uploadBlob = null;
+        modalSelection.uploadMeta = null;
+        modalSelection.uploadFileName = null;
+      } catch (error) {
+        console.error('No se pudo subir la imagen a Firebase:', error);
+        const friendlyMessage =
+          typeof error?.message === 'string' && error.message.trim()
+            ? error.message.trim()
+            : 'Intenta nuevamente.';
+        const errorCode = typeof error?.code === 'string' ? error.code : null;
+        const message = errorCode
+          ? `No se pudo subir la imagen (${errorCode}). ${friendlyMessage}`
+          : `No se pudo subir la imagen. ${friendlyMessage}`;
+        throw Object.assign(new Error(message), { userMessage: message });
+      }
+
+      if (primaryPhotoUrl) {
+        try {
+          updateAddPlaceStatus('Registrando imagen...');
+          const { response: imageResponse, payload: imagePayload } = await requestJSON(
+            `${API_BASE}/images`,
+            {
+              method: 'POST',
+              body: JSON.stringify({
+                u: primaryPhotoUrl,
+                w: modalSelection.uploadMeta?.width,
+                h: modalSelection.uploadMeta?.height,
+                s: modalSelection.uploadMeta?.size,
+                pv: 'fb'
+              })
+            }
+          );
+
+          if (imageResponse.ok && imagePayload?.image?.id) {
+            imageIds.push(imagePayload.image.id);
+          } else {
+            metadataSaved = false;
+            console.warn('No se pudo guardar la metadata de la imagen:', imagePayload);
+          }
+        } catch (metaError) {
+          metadataSaved = false;
+          console.warn('Error al registrar metadata de la imagen', metaError);
+        }
+      }
+    }
+
+    const placeData = {
+      id: placeId,
+      name: placeName,
+      address: placeAddress,
+      coords: modalSelection.coords,
+      photo: primaryPhotoUrl || selectionPhoto || ''
+    };
+
+    updateAddPlaceStatus('Guardando reseña...');
     const { response, payload } = await requestJSON(`${API_BASE}/reviews`, {
       method: 'POST',
       body: JSON.stringify({
@@ -1555,8 +1587,8 @@ async function saveReview() {
     });
 
     if (!response.ok) {
-      updateAddPlaceStatus(payload?.error || 'No se pudo guardar la reseña.');
-      return;
+      const message = payload?.error || 'No se pudo guardar la reseña.';
+      throw Object.assign(new Error(message), { userMessage: message });
     }
 
     if (payload?.place) {
@@ -1564,8 +1596,8 @@ async function saveReview() {
     }
 
     if (!payload?.review) {
-      updateAddPlaceStatus('Respuesta inesperada del servidor.');
-      return;
+      const message = 'Respuesta inesperada del servidor.';
+      throw Object.assign(new Error(message), { userMessage: message });
     }
 
     const normalized = normalizeReviewEntry(payload.review, currentUser);
@@ -1573,7 +1605,11 @@ async function saveReview() {
     refreshReviewOwnership();
     recomputeRep();
     renderAll();
-    updateAddPlaceStatus('');
+
+    const statusMessage = metadataSaved
+      ? ''
+      : 'Reseña guardada, pero no se registró la metadata de la imagen.';
+    updateAddPlaceStatus(statusMessage);
     modalSelection = null;
     closeCreateModal();
     if (mapInstance && normalized?.coords) {
@@ -1582,7 +1618,13 @@ async function saveReview() {
     document.querySelector('[data-tab="feed"]')?.click();
   } catch (error) {
     console.error('Error al crear la reseña', error);
-    updateAddPlaceStatus('No se pudo guardar la reseña. Intenta nuevamente.');
+    const message =
+      typeof error?.userMessage === 'string' && error.userMessage.trim()
+        ? error.userMessage.trim()
+        : 'No se pudo guardar la reseña. Intenta nuevamente.';
+    updateAddPlaceStatus(message);
+  } finally {
+    setSaveReviewPending(false);
   }
 }
 window.saveReview = saveReview;

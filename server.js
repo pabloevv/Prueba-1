@@ -541,6 +541,44 @@ app.post('/api/images', requireAuth, async (req, res) => {
   }
 });
 
+app.post('/api/admin/reset', requireAuth, async (req, res) => {
+  const seedDefaults = Boolean(req.body?.seedDefaults);
+  try {
+    const places = getCollection('places');
+    const reviews = getCollection('reviews');
+    const images = getCollection('images');
+    const votes = getCollection('review_votes');
+
+    const [placesResult, reviewsResult, imagesResult, votesResult] = await Promise.all([
+      places.deleteMany({}),
+      reviews.deleteMany({}),
+      images.deleteMany({}),
+      votes.deleteMany({})
+    ]);
+
+    const payload = {
+      ok: true,
+      cleared: {
+        places: placesResult?.deletedCount ?? 0,
+        reviews: reviewsResult?.deletedCount ?? 0,
+        images: imagesResult?.deletedCount ?? 0,
+        votes: votesResult?.deletedCount ?? 0
+      },
+      seeded: false
+    };
+
+    if (seedDefaults) {
+      await ensureIndexesAndSeed();
+      payload.seeded = true;
+    }
+
+    res.json(payload);
+  } catch (error) {
+    console.error('Error al limpiar datos de la aplicaci\u00f3n:', error);
+    res.status(500).json({ error: 'no_se_pudieron_limpiar_los_datos' });
+  }
+});
+
 app.get('/api/places', async (_req, res) => {
   try {
     const places = getCollection('places');

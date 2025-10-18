@@ -50,6 +50,7 @@ function App() {
       if (window.__LUGGO_LEGACY_INITIALIZED__) return;
       try {
         await import("./legacy/app.js");
+        await import("./legacy/maintenance.js");
         if (!cancelled) {
           window.__LUGGO_LEGACY_INITIALIZED__ = true;
         }
@@ -273,7 +274,11 @@ function App() {
             <button className="btn ghost" onClick={() => window.closeCreateModal?.()}>
               Cancelar
             </button>
-            <button className="btn primary" onClick={() => window.saveReview?.()}>
+            <button
+              id="saveReviewButton"
+              className="btn primary"
+              onClick={() => window.saveReview?.()}
+            >
               Guardar
             </button>
           </div>
