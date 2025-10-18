@@ -913,8 +913,14 @@ function initMap() {
     attribution: '© OpenStreetMap contributors'
   }).addTo(mapInstance);
   mapPlaceLayer = L.layerGroup().addTo(mapInstance);
+  mapUserLayer = L.layerGroup().addTo(mapInstance);
   mapSearchLayer = L.layerGroup().addTo(mapInstance);
   renderMapMarkers();
+  updateUserLocationMarker();
+  if (userLocation && !hasCenteredOnUser) {
+    mapInstance.flyTo([userLocation.lat, userLocation.lng], 14, { duration: 0.8 });
+    hasCenteredOnUser = true;
+  }
   setTimeout(invalidateMapView, 200);
 }
 
@@ -927,6 +933,41 @@ function renderMapMarkers() {
     marker.bindPopup(popup);
     marker.addTo(mapPlaceLayer);
   });
+}
+
+function updateUserLocationMarker() {
+  if (!mapInstance || !userLocation) return;
+  if (!mapUserLayer) {
+    mapUserLayer = L.layerGroup().addTo(mapInstance);
+  }
+  mapUserLayer.clearLayers();
+
+  const marker = L.circleMarker([userLocation.lat, userLocation.lng], {
+    radius: 8,
+    color: '#38bdf8',
+    weight: 3,
+    fillColor: '#1d4ed8',
+    fillOpacity: 0.8
+  }).bindPopup('<strong>Estás aquí</strong>');
+
+  marker.addTo(mapUserLayer);
+  userLocationMarker = marker;
+
+  const radius = userLocationAccuracy
+    ? Math.min(Math.max(userLocationAccuracy, 80), 600)
+    : 200;
+
+  const accuracyCircle = L.circle([userLocation.lat, userLocation.lng], {
+    radius,
+    color: '#38bdf8',
+    weight: 1,
+    fillColor: '#38bdf8',
+    fillOpacity: 0.08,
+    opacity: 0.4
+  });
+
+  accuracyCircle.addTo(mapUserLayer);
+  userAccuracyCircle = accuracyCircle;
 }
 
 let mapStatusTimeout = null;
@@ -973,6 +1014,11 @@ async function reverseGeocode(lat, lon) {
 }
 
 let userLocation = null;
+let userLocationAccuracy = null;
+let hasCenteredOnUser = false;
+let mapUserLayer = null;
+let userLocationMarker = null;
+let userAccuracyCircle = null;
 function initUserLocation() {
   if (!('geolocation' in navigator)) return;
   navigator.geolocation.getCurrentPosition(
@@ -981,7 +1027,15 @@ function initUserLocation() {
         lat: position.coords.latitude,
         lng: position.coords.longitude
       };
-      if (mapInstance) mapInstance.flyTo([userLocation.lat, userLocation.lng], 14, { duration: 0.8 });
+      userLocationAccuracy =
+        typeof position.coords.accuracy === 'number' && position.coords.accuracy > 0
+          ? position.coords.accuracy
+          : null;
+      updateUserLocationMarker();
+      if (mapInstance && !hasCenteredOnUser) {
+        mapInstance.flyTo([userLocation.lat, userLocation.lng], 14, { duration: 0.8 });
+        hasCenteredOnUser = true;
+      }
       if (modalMap) modalMap.setView([userLocation.lat, userLocation.lng], 14);
     },
     error => {
@@ -1542,6 +1596,7 @@ tabs.forEach(button => button.addEventListener('click', () => {
   if (target === 'profile') renderProfile();
   if (target === 'map') {
     initMap();
+    updateUserLocationMarker();
     setTimeout(invalidateMapView, 250);
   }
 }));
