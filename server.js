@@ -62,6 +62,7 @@ const firebaseClientEmail = process.env.FIREBASE_CLIENT_EMAIL;
 const firebasePrivateKey = resolveFirebasePrivateKey();
 const rawStorageBucket = process.env.FIREBASE_STORAGE_BUCKET;
 const firebaseStorageBucket = normalizeStorageBucket(rawStorageBucket);
+const FIREBASE_STORAGE_ROOT = process.env.FIREBASE_STORAGE_ROOT || 'luggo';
 
 if (rawStorageBucket && firebaseStorageBucket && firebaseStorageBucket !== rawStorageBucket.trim()) {
   console.warn(
@@ -444,6 +445,40 @@ async function ensureIndexesAndSeed() {
   }
 }
 
+async function purgeStorage(prefix = '') {
+  if (!firebaseStorageBucket) {
+    return { skipped: true, reason: 'storage_bucket_not_configured' };
+  }
+  try {
+    const bucket = firebaseAdmin.storage().bucket();
+    if (!bucket) {
+      return { skipped: true, reason: 'storage_bucket_not_available' };
+    }
+    const trimmed = String(prefix || '').replace(/^[\/\s]+/, '').replace(/[\/\s]+$/, '');
+    const targetPrefix = trimmed ? `${trimmed}/` : '';
+    const [files] = await bucket.getFiles({ prefix: targetPrefix });
+    if (!files || files.length === 0) {
+      return { deleted: 0, errors: [] };
+    }
+    let deleted = 0;
+    const errors = [];
+    await Promise.all(
+      files.map(async file => {
+        try {
+          await file.delete();
+          deleted += 1;
+        } catch (error) {
+          errors.push({ file: file.name, message: error?.message || 'unknown_error' });
+        }
+      })
+    );
+    return { deleted, errors };
+  } catch (error) {
+    console.error('No se pudo limpiar el storage de Firebase:', error);
+    return { deleted: 0, errors: [{ file: null, message: error?.message || 'storage_cleanup_failed' }] };
+  }
+}
+
 function parseObjectId(value) {
   try {
     return new ObjectId(value);
@@ -556,6 +591,8 @@ app.post('/api/admin/reset', requireAuth, async (req, res) => {
       votes.deleteMany({})
     ]);
 
+    const storageResult = await purgeStorage(FIREBASE_STORAGE_ROOT);
+
     const payload = {
       ok: true,
       cleared: {
@@ -564,6 +601,7 @@ app.post('/api/admin/reset', requireAuth, async (req, res) => {
         images: imagesResult?.deletedCount ?? 0,
         votes: votesResult?.deletedCount ?? 0
       },
+      storage: storageResult,
       seeded: false
     };
 

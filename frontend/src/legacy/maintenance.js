@@ -144,14 +144,34 @@ async function runCleanup(options = {}) {
     setStatus('Limpiando datos del servidor...');
     const result = await resetBackendData(Boolean(options.seedDefaults));
 
-    setStatus('Listo. Recargando...');
-    setTimeout(() => {
-      window.location.reload();
-    }, 1200);
+    const stats = [];
+    const cleared = result?.cleared || {};
+    if (typeof cleared.reviews === 'number') stats.push(`${cleared.reviews} resenas`);
+    if (typeof cleared.places === 'number') stats.push(`${cleared.places} lugares`);
+    if (typeof cleared.images === 'number') stats.push(`${cleared.images} imagenes`);
+    if (typeof cleared.votes === 'number') stats.push(`${cleared.votes} votos`);
+
+    const storageInfo = result?.storage || {};
+    if (typeof storageInfo.deleted === 'number' && !storageInfo.skipped) {
+      stats.push(`${storageInfo.deleted} archivos en Firebase Storage`);
+    }
+
+    const summary = stats.length ? `Limpieza completa (${stats.join(', ')}).` : 'Limpieza completa.';
+    const storageErrors = Array.isArray(storageInfo.errors) ? storageInfo.errors.filter(Boolean) : [];
+
+    if (storageErrors.length > 0) {
+      setStatus(`${summary} No se pudieron eliminar ${storageErrors.length} archivos de Storage.`);
+    } else if (storageInfo.skipped) {
+      setStatus(`${summary} Storage omitido (${storageInfo.reason || 'no configurado'}). Recargando...`);
+      setTimeout(() => window.location.reload(), 1400);
+    } else {
+      setStatus(`${summary} Recargando...`);
+      setTimeout(() => window.location.reload(), 1200);
+    }
     return result;
   } catch (error) {
     console.error('No se pudo completar la limpieza:', error);
-    setStatus(error?.message || 'Ocurrió un error al limpiar los datos.');
+    setStatus(error?.message || 'Ocurrio un error al limpiar los datos.');
     throw error;
   } finally {
     cleanupRunning = false;
