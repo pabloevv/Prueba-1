@@ -1,6 +1,5 @@
-﻿const path = require('node:path');
-const crypto = require('node:crypto');
-const fs = require('node:fs');
+/* eslint-disable no-console */
+const path = require('node:path');
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
@@ -9,74 +8,26 @@ const { MongoClient, ObjectId } = require('mongodb');
 
 dotenv.config();
 
-const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
-const DEFAULT_STATIC_DIR = path.join(__dirname, 'frontend', 'dist');
-const STATIC_DIR = process.env.STATIC_DIR ? path.resolve(process.env.STATIC_DIR) : DEFAULT_STATIC_DIR;
+const PORT = Number(process.env.PORT) || 3000;
+const STATIC_DIR = path.join(__dirname, 'frontend', 'dist');
 
 const MONGODB_URI = process.env.MONGODB_URI;
-const MONGODB_DB_NAME = process.env.MONGODB_DB_NAME || 'luggo';
+const MONGODB_DB_NAME = process.env.MONGODB_DB_NAME || 'Luggov2';
 
 if (!MONGODB_URI) {
   console.error('Falta la variable de entorno MONGODB_URI en el archivo .env');
   process.exit(1);
 }
 
-function normalizeStorageBucket(rawBucket) {
-  if (!rawBucket) return undefined;
-  const trimmed = String(rawBucket).trim();
-  if (!trimmed) return undefined;
-  if (trimmed.endsWith('.firebaseapp.com')) {
-    return trimmed.replace(/\.firebaseapp\.com$/, '.firebasestorage.app');
-  }
-  if (trimmed.endsWith('.firebasestorage.app')) {
-    return trimmed;
-  }
-  return trimmed;
-}
-
-function resolveFirebasePrivateKey() {
-  const base64Key = process.env.FIREBASE_PRIVATE_KEY_BASE64;
-  if (base64Key && base64Key.trim()) {
-    try {
-      const decoded = Buffer.from(base64Key.trim(), 'base64').toString('utf8');
-      if (decoded.includes('-----BEGIN')) {
-        return decoded.replace(/\r/g, '');
-      }
-      console.warn('FIREBASE_PRIVATE_KEY_BASE64 presente pero no parece contener una clave PEM válida.');
-    } catch (error) {
-      console.warn('No se pudo decodificar FIREBASE_PRIVATE_KEY_BASE64:', error.message);
-    }
-  }
-
-  const raw = process.env.FIREBASE_PRIVATE_KEY;
-  if (raw && raw.trim()) {
-    return raw.trim().replace(/\\n/g, '\n').replace(/\r/g, '');
-  }
-
-  return null;
-}
-
+// Firebase Admin
 const firebaseProjectId = process.env.FIREBASE_PROJECT_ID;
 const firebaseClientEmail = process.env.FIREBASE_CLIENT_EMAIL;
 const firebasePrivateKey = resolveFirebasePrivateKey();
-const rawStorageBucket = process.env.FIREBASE_STORAGE_BUCKET;
-const firebaseStorageBucket = normalizeStorageBucket(rawStorageBucket);
-const FIREBASE_STORAGE_ROOT = process.env.FIREBASE_STORAGE_ROOT || 'luggo';
-
-if (rawStorageBucket && firebaseStorageBucket && firebaseStorageBucket !== rawStorageBucket.trim()) {
-  console.warn(
-    `FIREBASE_STORAGE_BUCKET normalizado a "${firebaseStorageBucket}". Actualiza tu .env para evitar este mensaje.`
-  );
-}
+const firebaseStorageBucket = process.env.FIREBASE_STORAGE_BUCKET || undefined;
 
 if (!firebaseProjectId || !firebaseClientEmail || !firebasePrivateKey) {
-  console.error(
-    [
-      'Faltan variables de entorno de Firebase.',
-      'AsegÃºrate de definir FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL y FIREBASE_PRIVATE_KEY.'
-    ].join(' ')
-  );
+  console.error('Faltan variables de entorno de Firebase (FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY)');
   process.exit(1);
 }
 
@@ -89,13 +40,9 @@ if (!firebaseAdmin.apps.length) {
     }),
     storageBucket: firebaseStorageBucket
   });
-  if (!firebaseStorageBucket && process.env.FIREBASE_STORAGE_BUCKET) {
-    console.warn(
-      'FIREBASE_STORAGE_BUCKET no está definido correctamente; se omitió la configuración del bucket.'
-    );
-  }
 }
 
+// MongoDB Client
 const mongoClient = new MongoClient(MONGODB_URI, {
   ignoreUndefined: true,
   maxPoolSize: 20,
@@ -106,236 +53,506 @@ let mongoDb = null;
 const collectionsCache = new Map();
 
 function getCollection(name) {
-  if (!mongoDb) {
-    throw new Error('MongoDB no se ha inicializado todavÃ­a.');
-  }
-  if (!collectionsCache.has(name)) {
-    collectionsCache.set(name, mongoDb.collection(name));
-  }
+  if (!mongoDb) throw new Error('MongoDB aún no está inicializado');
+  if (!collectionsCache.has(name)) collectionsCache.set(name, mongoDb.collection(name));
   return collectionsCache.get(name);
 }
 
-const DEFAULT_PLACES = [
-  {
-    id: 'cafe-aurora',
-    name: 'Cafe Aurora',
-    address: 'San Jose, CR',
-    lat: 9.9339,
-    lng: -84.0833,
-    photo:
-      'https://images.unsplash.com/photo-1541167760496-1628856ab772?q=80&w=1200&auto=format&fit=crop'
-  },
-  {
-    id: 'parque-sabana',
-    name: 'Parque La Sabana',
-    address: 'San Jose, CR',
-    lat: 9.938,
-    lng: -84.1008,
-    photo:
-      'https://images.unsplash.com/photo-1558981359-219d6364c9b8?q=80&w=1200&auto=format&fit=crop'
-  },
-  {
-    id: 'mercado-central',
-    name: 'Mercado Central',
-    address: 'San Jose, CR',
-    lat: 9.9343,
-    lng: -84.0818,
-    photo:
-      'https://images.unsplash.com/photo-1542831371-29b0f74f9713?q=80&w=1200&auto=format&fit=crop'
+// ---------------------------------------
+// Helpers
+// ---------------------------------------
+
+function resolveFirebasePrivateKey() {
+  const base64Key = process.env.FIREBASE_PRIVATE_KEY_BASE64;
+  if (base64Key && base64Key.trim()) {
+    try {
+      const decoded = Buffer.from(base64Key.trim(), 'base64').toString('utf8');
+      if (decoded.includes('-----BEGIN')) return decoded.replace(/\r/g, '');
+      console.warn('FIREBASE_PRIVATE_KEY_BASE64 presente pero no parece contener una clave PEM válida.');
+    } catch (error) {
+      console.warn('No se pudo decodificar FIREBASE_PRIVATE_KEY_BASE64:', error.message);
+    }
   }
-];
 
-const DEFAULT_REVIEWS = [
-  {
-    placeId: 'cafe-aurora',
-    authorName: 'Usuario Demo',
-    rating: 5,
-    note: 'Capuchino cremoso y terraza con sombra. Ideal para estudiar.',
-    tags: ['cafe', 'wifi', 'brunch'],
-    upvotes: 3,
-    downvotes: 0,
-    photo: '',
-    city: 'San Jose, CR',
-    lat: 9.9339,
-    lng: -84.0833,
-    createdAt: new Date(Date.now() - 6 * 60 * 60 * 1000)
-  },
-  {
-    placeId: 'parque-sabana',
-    authorName: 'Maria',
-    rating: 4,
-    note: 'Buen lugar para correr al atardecer. Llevar repelente para mosquitos.',
-    tags: ['aire libre', 'running'],
-    upvotes: 2,
-    downvotes: 1,
-    photo: '',
-    city: 'San Jose, CR',
-    lat: 9.938,
-    lng: -84.1008,
-    createdAt: new Date(Date.now() - 24 * 60 * 60 * 1000)
-  },
-  {
-    placeId: 'mercado-central',
-    authorName: 'Luis',
-    rating: 5,
-    note: 'Sodas tipicas ricas y baratas. Prueba el casado.',
-    tags: ['comida tipica', 'barato'],
-    upvotes: 5,
-    downvotes: 0,
-    photo: '',
-    city: 'San Jose, CR',
-    lat: 9.9343,
-    lng: -84.0818,
-    createdAt: new Date(Date.now() - 30 * 60 * 60 * 1000)
+  const raw = process.env.FIREBASE_PRIVATE_KEY;
+  if (raw && raw.trim()) {
+    return raw.trim().replace(/\\n/g, '\n').replace(/\r/g, '');
   }
-];
+  return null;
+}
 
-const app = express();
+function slugify(input) {
+  return String(input || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)/g, '')
+    .replace(/--+/g, '-')
+    .slice(0, 64);
+}
 
-const allowedOrigins = (process.env.CORS_ALLOWED_ORIGINS || '')
-  .split(',')
-  .map(origin => origin.trim())
-  .filter(Boolean);
+function encodePublicId(num) {
+  const value = Math.max(1, Number(num) || 1);
+  return value.toString(36).padStart(6, '0').toUpperCase();
+}
 
-const corsOptions =
-  allowedOrigins.length > 0
-    ? { origin: allowedOrigins, credentials: true }
-    : { origin: true, credentials: true };
+async function getNextSequence(name) {
+  const counters = getCollection('counters');
+  const { value } = await counters.findOneAndUpdate(
+    { _id: name },
+    { $inc: { next: 1 } },
+    {
+      upsert: true,
+      returnDocument: 'after',
+      projection: { next: 1 }
+    }
+  );
 
-app.use(cors(corsOptions));
-app.use(express.json({ limit: '2mb' }));
+  if (value && Number.isFinite(value.next)) {
+    return value.next;
+  }
 
-function toNumber(value) {
-  if (value === null || value === undefined) return null;
-  const num = Number(value);
-  return Number.isFinite(num) ? num : null;
+  const fallback = await counters.findOne({ _id: name }, { projection: { next: 1 } });
+  if (fallback && Number.isFinite(fallback.next)) {
+    return fallback.next;
+  }
+
+  await counters.updateOne(
+    { _id: name },
+    { $set: { next: 1 } },
+    { upsert: true }
+  );
+  return 1;
+}
+
+async function generateReviewPublicId() {
+  const next = await getNextSequence('reviewPublicId');
+  return encodePublicId(next);
+}
+
+async function ensurePlaceSlug(name) {
+  const base = slugify(name);
+  const places = getCollection('places');
+  let candidate = base || encodePublicId(await getNextSequence('placeSlug'));
+  let suffix = 2;
+  // eslint-disable-next-line no-await-in-loop
+  while (await places.findOne({ slug: candidate }, { projection: { _id: 1 } })) {
+    candidate = `${base}-${suffix}`;
+    suffix += 1;
+  }
+  return candidate;
+}
+
+function toObjectId(value) {
+  if (!value) return null;
+  try {
+    return new ObjectId(value);
+  } catch {
+    return null;
+  }
+}
+
+function mapPlaceDoc(doc) {
+  if (!doc) return null;
+  const coords = doc.location?.type === 'Point' && Array.isArray(doc.location.coordinates)
+    ? { lat: doc.location.coordinates[1], lng: doc.location.coordinates[0] }
+    : null;
+  return {
+    id: doc.slug,
+    name: doc.name,
+    address: doc.address || '',
+    coords,
+    photo: Array.isArray(doc.photos) && doc.photos.length ? doc.photos[0] : ''
+  };
 }
 
 function mapImageDoc(doc) {
   if (!doc) return null;
   return {
-    id: doc._id.toString(),
-    url: doc.url,
-    provider: doc.provider || 'fb',
-    width: typeof doc.width === 'number' ? doc.width : null,
-    height: typeof doc.height === 'number' ? doc.height : null,
-    size: typeof doc.size === 'number' ? doc.size : null,
-    thumbnail: doc.thumbnailUrl || null
-  };
-}
-
-function mapPlaceDoc(doc) {
-  if (!doc) return null;
-  const hasCoords =
-    doc.coords &&
-    typeof doc.coords.lat === 'number' &&
-    typeof doc.coords.lng === 'number';
-  return {
-    id: doc._id,
-    name: doc.name,
-    address: doc.address || '',
-    photo: doc.photoUrl || '',
-    coords: hasCoords ? { lat: doc.coords.lat, lng: doc.coords.lng } : null
-  };
-}
-
-function mapUserDoc(doc) {
-  if (!doc) return null;
-  return {
     id: doc._id ? doc._id.toString() : null,
-    uid: doc.uid,
-    displayName: doc.displayName || doc.email || 'Visitante',
-    photoURL: doc.photoURL || null,
-    email: doc.email || null,
-    role: doc.role || 'usr'
+    url: doc.url || '',
+    provider: doc.provider || 'manual',
+    thumbnail: doc.thumbnailUrl || null,
+    width: doc.width || null,
+    height: doc.height || null,
+    size: doc.size || null,
+    mimeType: doc.mimeType || null,
+    createdAt:
+      doc.createdAt instanceof Date ? doc.createdAt.getTime() : Date.parse(doc.createdAt || '') || null
   };
 }
 
-function mapReviewDoc(doc, placeDoc, userDoc, imageDocs, myVote = 0) {
-  if (!doc) return null;
-  const coords =
-    doc.coords &&
-    typeof doc.coords.lat === 'number' &&
-    typeof doc.coords.lng === 'number'
-      ? { lat: doc.coords.lat, lng: doc.coords.lng }
-      : placeDoc?.coords &&
-        typeof placeDoc.coords.lat === 'number' &&
-        typeof placeDoc.coords.lng === 'number'
-      ? { lat: placeDoc.coords.lat, lng: placeDoc.coords.lng }
-      : null;
+function mapReviewDoc(doc, myVotes, likedByMap, dislikedByMap) {
+  const placeDoc = doc.place || null;
+  const coords = placeDoc?.location?.type === 'Point' && Array.isArray(placeDoc.location.coordinates)
+    ? { lat: placeDoc.location.coordinates[1], lng: placeDoc.location.coordinates[0] }
+    : null;
 
-  const createdAt =
-    doc.createdAt instanceof Date
-      ? doc.createdAt.getTime()
-      : doc.createdAt
-      ? Date.parse(doc.createdAt)
-      : Date.now();
+  const stats = doc.stats || {};
+  const images = Array.isArray(doc.images) ? doc.images : [];
 
-  const tags = Array.isArray(doc.tags)
-    ? doc.tags.filter(tag => typeof tag === 'string')
-    : [];
-
-  const imagePayload = Array.isArray(imageDocs)
-    ? imageDocs.map(mapImageDoc).filter(Boolean)
-    : [];
-
-  const primaryImage = imagePayload.find(image => image?.url);
-
-  const resolvedPhoto =
-    doc.photoUrl ||
-    primaryImage?.url ||
-    placeDoc?.photo ||
-    doc.photo ||
+  const primaryPhoto =
+    images[0]?.url ||
+    (Array.isArray(placeDoc?.photos) && placeDoc.photos.length ? placeDoc.photos[0] : '') ||
     '';
 
+  const mappedTags = Array.isArray(doc.tags) ? doc.tags : [];
+
   return {
-    id: doc._id.toString(),
-    placeId: doc.placeId,
-    city: doc.city || placeDoc?.address || '',
+    id: doc.publicId,
+    placeId: placeDoc?.slug || doc.placeSlug || '',
+    city: placeDoc?.city || '',
     rating: Number(doc.rating) || 0,
-    photo: resolvedPhoto,
+    photo: primaryPhoto,
     note: doc.note || '',
-    tags,
-    userId: userDoc?._id ? userDoc._id.toString() : null,
-    userUid: doc.uid || null,
-    userName: doc.authorName || userDoc?.displayName || '',
-    up: Number(doc.upvotes) || 0,
-    down: Number(doc.downvotes) || 0,
-    createdAt,
+    tags: mappedTags,
+    userId: null,
+    userUid: doc.authorUid || null,
+    userName: doc.authorDisplayName || '',
+    up: Number(stats.likes) || 0,
+    down: Number(stats.dislikes) || 0,
+    createdAt:
+      doc.createdAt instanceof Date
+        ? doc.createdAt.getTime()
+        : typeof doc.createdAt === 'number'
+        ? doc.createdAt
+        : Date.parse(doc.createdAt) || Date.now(),
     coords,
-    images: imagePayload,
-    myVote: Number.isInteger(myVote) ? myVote : 0
+    images,
+    myVote: myVotes.get(doc.publicId) || 0,
+    likedBy: likedByMap.get(doc.publicId) || [],
+    dislikedBy: dislikedByMap.get(doc.publicId) || []
   };
 }
 
-async function ensureUserDocument(decodedToken) {
-  const users = getCollection('users');
-  const now = new Date();
-  const profile = {
-    uid: decodedToken.uid,
-    email: decodedToken.email || null,
-    displayName: decodedToken.name || decodedToken.email || 'Visitante',
-    photoURL: decodedToken.picture || null,
-    provider: decodedToken.firebase?.sign_in_provider || null,
-    updatedAt: now
-  };
+async function loadReactionData(publicIds, currentUid) {
+  if (!publicIds.length) {
+    return { myVotes: new Map(), likedBy: new Map(), dislikedBy: new Map() };
+  }
 
-  const { value } = await users.findOneAndUpdate(
-    { uid: decodedToken.uid },
+  const reactions = getCollection('review_reactions');
+  const limit = Math.max(24, publicIds.length * 24);
+  const docs = await reactions
+    .find({ reviewPublicId: { $in: publicIds } })
+    .sort({ updatedAt: -1 })
+    .limit(limit)
+    .toArray();
+
+  const myVotes = new Map();
+  const likedByMap = new Map();
+  const dislikedByMap = new Map();
+
+  docs.forEach(doc => {
+    const reviewPublicId = doc.reviewPublicId;
+
+    if (currentUid && doc.uid === currentUid && !myVotes.has(reviewPublicId)) {
+      myVotes.set(reviewPublicId, doc.value);
+    }
+
+    const sample = {
+      uid: doc.uid,
+      displayName: doc.userDisplayName || null,
+      photoURL: doc.userPhotoURL || null,
+      value: doc.value,
+      updatedAt:
+        doc.updatedAt instanceof Date
+          ? doc.updatedAt.getTime()
+          : Date.parse(doc.updatedAt || '') || null
+    };
+
+    if (doc.value === 1) {
+      const list = likedByMap.get(reviewPublicId) || [];
+      if (list.length < 12) list.push(sample);
+      likedByMap.set(reviewPublicId, list);
+    } else if (doc.value === -1) {
+      const list = dislikedByMap.get(reviewPublicId) || [];
+      if (list.length < 12) list.push(sample);
+      dislikedByMap.set(reviewPublicId, list);
+    }
+  });
+
+  return { myVotes, likedBy: likedByMap, dislikedBy: dislikedByMap };
+}
+
+function buildReviewsPipeline(filter = {}, limit = 100) {
+  return [
+    { $match: filter },
+    { $sort: { createdAt: -1 } },
+    { $limit: limit },
     {
-      $set: profile,
-      $setOnInsert: {
-        role: 'usr',
-        createdAt: now
+      $lookup: {
+        from: 'places',
+        localField: 'placeId',
+        foreignField: '_id',
+        as: 'place'
       }
     },
     {
-      upsert: true,
-      returnDocument: 'after'
+      $lookup: {
+        from: 'review_images',
+        let: { reviewId: '$publicId' },
+        pipeline: [
+          { $match: { $expr: { $eq: ['$reviewPublicId', '$$reviewId'] } } },
+          { $sort: { position: 1 } },
+          {
+            $lookup: {
+              from: 'images',
+              localField: 'imageId',
+              foreignField: '_id',
+              as: 'image'
+            }
+          },
+          { $unwind: '$image' },
+          {
+            $project: {
+              _id: 0,
+              id: { $toString: '$image._id' },
+              url: '$image.url',
+              thumbnail: '$image.thumbnailUrl',
+              provider: '$image.provider'
+            }
+          }
+        ],
+        as: 'images'
+      }
+    },
+    {
+      $lookup: {
+        from: 'review_tags',
+        let: { reviewId: '$publicId' },
+        pipeline: [
+          { $match: { $expr: { $eq: ['$reviewPublicId', '$$reviewId'] } } },
+          {
+            $lookup: {
+              from: 'catalog_tags',
+              localField: 'tagId',
+              foreignField: '_id',
+              as: 'tag'
+            }
+          },
+          { $unwind: '$tag' },
+          {
+            $project: {
+              _id: 0,
+              slug: '$tag.slug',
+              label: '$tag.label'
+            }
+          }
+        ],
+        as: 'tagDetails'
+      }
+    },
+    {
+      $addFields: {
+        place: { $arrayElemAt: ['$place', 0] },
+        tags: {
+          $map: {
+            input: '$tagDetails',
+            as: 'tag',
+            in: '$$tag.slug'
+          }
+        }
+      }
+    },
+    {
+      $project: {
+        _id: 1,
+        publicId: 1,
+        legacyId: 1,
+        placeId: 1,
+        placeSlug: 1,
+        place: 1,
+        authorUid: 1,
+        authorDisplayName: 1,
+        authorPhotoURL: 1,
+        rating: 1,
+        note: 1,
+        summary: 1,
+        tags: 1,
+        stats: 1,
+        visibility: 1,
+        moderation: 1,
+        createdAt: 1,
+        updatedAt: 1,
+        images: 1
+      }
+    }
+  ];
+}
+
+async function fetchReviews(filter = {}, { limit = 100, currentUid = null } = {}) {
+  const reviewsCollection = getCollection('reviews');
+  const pipeline = buildReviewsPipeline(filter, limit);
+  const docs = await reviewsCollection.aggregate(pipeline).toArray();
+  const publicIds = docs.map(doc => doc.publicId);
+  const { myVotes, likedBy, dislikedBy } = await loadReactionData(publicIds, currentUid);
+  return docs.map(doc => mapReviewDoc(doc, myVotes, likedBy, dislikedBy));
+}
+
+async function ensureTags(tagStrings) {
+  if (!Array.isArray(tagStrings) || !tagStrings.length) return [];
+  const normalized = [...new Set(tagStrings.map(tag => slugify(tag)).filter(Boolean))];
+  if (!normalized.length) return [];
+
+  const tagsCollection = getCollection('catalog_tags');
+  const existing = await tagsCollection.find({ slug: { $in: normalized } }).toArray();
+  const existingMap = new Map(existing.map(tag => [tag.slug, tag]));
+
+  const now = new Date();
+  const missing = normalized.filter(slug => !existingMap.has(slug));
+  if (missing.length) {
+    const insertDocs = missing.map(slug => ({
+      slug,
+      label: `#${slug}`,
+      createdAt: now,
+      updatedAt: now
+    }));
+    const result = await tagsCollection.insertMany(insertDocs);
+    insertDocs.forEach((doc, index) => {
+      doc._id = result.insertedIds[index];
+      existingMap.set(doc.slug, doc);
+    });
+  }
+
+  return normalized.map(slug => existingMap.get(slug)).filter(Boolean);
+}
+
+async function resolvePlace(payload, authorUid) {
+  const places = getCollection('places');
+
+  const bodyPlace = payload.place || {};
+  const rawSlug = payload.placeSlug || payload.placeId || bodyPlace.slug;
+  if (typeof rawSlug === 'string' && rawSlug.trim()) {
+    const place = await places.findOne({ slug: rawSlug.trim() });
+    if (place) return place;
+  }
+
+  if (!bodyPlace.name || !bodyPlace.coords) {
+    throw new Error('place_required');
+  }
+
+  const coords = bodyPlace.coords;
+  if (
+    !coords ||
+    typeof coords.lat !== 'number' ||
+    typeof coords.lng !== 'number'
+  ) {
+    throw new Error('place_coords_invalid');
+  }
+
+  const now = new Date();
+  const slug = await ensurePlaceSlug(bodyPlace.slug || bodyPlace.name);
+  const placeDoc = {
+    slug,
+    name: bodyPlace.name,
+    description: bodyPlace.description || '',
+    address: bodyPlace.address || '',
+    city: bodyPlace.city || '',
+    country: bodyPlace.country || 'CR',
+    openingHours: Array.isArray(bodyPlace.openingHours) ? bodyPlace.openingHours : [],
+    photos: Array.isArray(bodyPlace.photos) ? bodyPlace.photos : [],
+    location: { type: 'Point', coordinates: [coords.lng, coords.lat] },
+    stats: { reviews: 0, avgRating: 0 },
+    meta: { createdByUid: authorUid, lastReviewAt: null },
+    createdAt: now,
+    updatedAt: now
+  };
+
+  const { insertedId } = await places.insertOne(placeDoc);
+  placeDoc._id = insertedId;
+
+  const requestedCategories = Array.isArray(bodyPlace.categories) ? bodyPlace.categories : [];
+  if (requestedCategories.length) {
+    const categoriesCollection = getCollection('catalog_categories');
+    const categoryDocs = await categoriesCollection
+      .find({ slug: { $in: requestedCategories.map(slugify) } })
+      .toArray();
+    if (categoryDocs.length) {
+      const placeCategories = getCollection('place_categories');
+      const pivotDocs = categoryDocs.map(cat => ({
+        placeId: insertedId,
+        categoryId: cat._id,
+        createdAt: now,
+        createdByUid: authorUid
+      }));
+      if (pivotDocs.length) await placeCategories.insertMany(pivotDocs);
+    }
+  }
+
+  return placeDoc;
+}
+
+async function attachReviewTags(reviewPublicId, tags, createdByUid) {
+  if (!tags.length) return;
+  const reviewTags = getCollection('review_tags');
+  const now = new Date();
+  const pivotDocs = tags.map(tag => ({
+    reviewPublicId,
+    tagId: tag._id,
+    createdAt: now,
+    createdByUid
+  }));
+  await reviewTags.insertMany(pivotDocs);
+}
+
+async function attachReviewImages(reviewPublicId, imageIds, createdByUid) {
+  if (!imageIds.length) return;
+  const reviewImages = getCollection('review_images');
+  const now = new Date();
+  const pivotDocs = imageIds.map((imageId, index) => ({
+    reviewPublicId,
+    imageId,
+    position: index,
+    createdAt: now,
+    createdByUid
+  }));
+  await reviewImages.insertMany(pivotDocs);
+}
+
+async function updatePlaceStats(placeDoc, rating) {
+  const places = getCollection('places');
+  const currentStats = placeDoc.stats || { reviews: 0, avgRating: 0 };
+  const currentCount = Number(currentStats.reviews) || 0;
+  const currentAvg = Number(currentStats.avgRating) || 0;
+  const newCount = currentCount + 1;
+  const newAvg = Number(((currentAvg * currentCount + rating) / newCount).toFixed(2));
+
+  await places.updateOne(
+    { _id: placeDoc._id },
+    {
+      $set: {
+        'stats.reviews': newCount,
+        'stats.avgRating': newAvg,
+        updatedAt: new Date(),
+        'meta.lastReviewAt': new Date()
+      }
     }
   );
+}
 
-  return value;
+// ---------------------------------------
+// Auth helpers
+// ---------------------------------------
+
+async function requireAuth(req, res, next) {
+  const header = req.headers.authorization || '';
+  if (!header.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'auth_required' });
+  }
+  const token = header.slice(7).trim();
+  if (!token) {
+    return res.status(401).json({ error: 'auth_required' });
+  }
+  try {
+    const decoded = await firebaseAdmin.auth().verifyIdToken(token);
+    req.auth = decoded;
+    req.userDoc = await ensureUserDocument(decoded);
+    return next();
+  } catch (error) {
+    console.error('Error al verificar token:', error);
+    return res.status(401).json({ error: 'invalid_token' });
+  }
 }
 
 async function optionalAuth(req) {
@@ -353,217 +570,195 @@ async function optionalAuth(req) {
     const userDoc = await users.findOne({ uid: decoded.uid });
     return { decoded, userDoc };
   } catch (error) {
-    console.warn('Token de Firebase invÃ¡lido (ignorado):', error.message);
+    console.warn('Token de Firebase inválido (se ignora):', error.message);
     return null;
   }
 }
 
-async function requireAuth(req, res, next) {
-  try {
-    const header = req.headers.authorization || '';
-    if (!header.startsWith('Bearer ')) {
-      return res.status(401).json({ error: 'auth_required' });
-    }
-    const token = header.slice(7).trim();
-    if (!token) {
-      return res.status(401).json({ error: 'auth_required' });
-    }
-    const decoded = await firebaseAdmin.auth().verifyIdToken(token);
-    req.auth = decoded;
-    req.userDoc = await ensureUserDocument(decoded);
-    return next();
-  } catch (error) {
-    console.error('Error en autenticaciÃ³n:', error);
-    return res.status(401).json({ error: 'invalid_token' });
-  }
-}
-
-async function ensureIndexesAndSeed() {
+async function ensureUserDocument(decoded) {
   const users = getCollection('users');
-  const places = getCollection('places');
-  const reviews = getCollection('reviews');
-  const images = getCollection('images');
-  const votes = getCollection('review_votes');
+  const now = new Date();
+  const profile = {
+    uid: decoded.uid,
+    email: decoded.email || null,
+    emailVerified: Boolean(decoded.email_verified),
+    displayName: decoded.name || decoded.email || 'Visitante',
+    photoURL: decoded.picture || null,
+    role: 'usr',
+    stats: { reviews: 0, reactions: 0, karma: 0 },
+    meta: {
+      locale: decoded.locale || 'es-CR',
+      lastLoginAt: now
+    },
+    updatedAt: now
+  };
 
-  await Promise.all([
-    users.createIndex({ uid: 1 }, { unique: true }),
-    places.createIndex({ name: 1 }),
-    places.createIndex({ location: '2dsphere' }),
-    reviews.createIndex({ placeId: 1, createdAt: -1 }),
-    reviews.createIndex({ uid: 1, createdAt: -1 }),
-    images.createIndex({ uid: 1, createdAt: -1 }),
-    votes.createIndex({ reviewId: 1, uid: 1 }, { unique: true })
-  ]);
-
-  const placeCount = await places.estimatedDocumentCount();
-  if (placeCount === 0) {
-    const now = new Date();
-    await places.insertMany(
-      DEFAULT_PLACES.map(place => ({
-        _id: place.id,
-        name: place.name,
-        address: place.address || '',
-        photoUrl: place.photo || '',
-        coords:
-          typeof place.lat === 'number' && typeof place.lng === 'number'
-            ? { lat: place.lat, lng: place.lng }
-            : null,
-        location:
-          typeof place.lat === 'number' && typeof place.lng === 'number'
-            ? { type: 'Point', coordinates: [place.lng, place.lat] }
-            : null,
-        createdAt: now,
-        updatedAt: now
-      }))
-    );
-  }
-
-  const reviewCount = await reviews.estimatedDocumentCount();
-  if (reviewCount === 0) {
-    const now = new Date();
-    await reviews.insertMany(
-      DEFAULT_REVIEWS.map(review => ({
-        placeId: review.placeId,
-        uid: null,
-        authorName: review.authorName,
-        rating: review.rating,
-        note: review.note || '',
-        tags: review.tags || [],
-        city: review.city || '',
-        coords:
-          typeof review.lat === 'number' && typeof review.lng === 'number'
-            ? { lat: review.lat, lng: review.lng }
-            : null,
-        imageIds: [],
-        photoUrl: review.photo || '',
-        upvotes: review.upvotes || 0,
-        downvotes: review.downvotes || 0,
-        createdAt: review.createdAt || now,
-        updatedAt: now
-      }))
-    );
-  }
-}
-
-async function purgeStorage(prefix = '') {
-  if (!firebaseStorageBucket) {
-    return { skipped: true, reason: 'storage_bucket_not_configured' };
-  }
-  try {
-    const bucket = firebaseAdmin.storage().bucket();
-    if (!bucket) {
-      return { skipped: true, reason: 'storage_bucket_not_available' };
+  const { value } = await users.findOneAndUpdate(
+    { uid: decoded.uid },
+    {
+      $set: profile,
+      $setOnInsert: {
+        createdAt: now
+      }
+    },
+    {
+      returnDocument: 'after',
+      upsert: true
     }
-    const trimmed = String(prefix || '').replace(/^[\/\s]+/, '').replace(/[\/\s]+$/, '');
-    const targetPrefix = trimmed ? `${trimmed}/` : '';
-    const [files] = await bucket.getFiles({ prefix: targetPrefix });
-    if (!files || files.length === 0) {
-      return { deleted: 0, errors: [] };
-    }
-    let deleted = 0;
-    const errors = [];
-    await Promise.all(
-      files.map(async file => {
-        try {
-          await file.delete();
-          deleted += 1;
-        } catch (error) {
-          errors.push({ file: file.name, message: error?.message || 'unknown_error' });
-        }
-      })
-    );
-    return { deleted, errors };
-  } catch (error) {
-    console.error('No se pudo limpiar el storage de Firebase:', error);
-    return { deleted: 0, errors: [{ file: null, message: error?.message || 'storage_cleanup_failed' }] };
+  );
+
+  if (value) {
+    return value;
   }
+
+  const fallback = await users.findOne({ uid: decoded.uid });
+  if (fallback) {
+    return fallback;
+  }
+
+  const inserted = {
+    ...profile,
+    createdAt: now
+  };
+  await users.insertOne(inserted);
+  return inserted;
 }
 
-function parseObjectId(value) {
-  try {
-    return new ObjectId(value);
-  } catch {
-    return null;
-  }
-}
+// ---------------------------------------
+// Express App
+// ---------------------------------------
 
-app.get('/health', async (_req, res) => {
-  try {
-    await mongoDb.command({ ping: 1 });
-    res.json({ status: 'ok' });
-  } catch (error) {
-    res.status(503).json({ status: 'error', error: error.message });
-  }
-});
+const app = express();
+
+const allowedOrigins = (process.env.CORS_ALLOWED_ORIGINS || '')
+  .split(',')
+  .map(origin => origin.trim())
+  .filter(Boolean);
+
+const corsOptions = allowedOrigins.length
+  ? { origin: allowedOrigins, credentials: true }
+  : { origin: true, credentials: true };
+
+app.use(cors(corsOptions));
+app.use(express.json({ limit: '2mb' }));
+
+// Static frontend (opcional)
+app.use(express.static(STATIC_DIR));
+
+// ---------------------------------------
+// API Routes
+// ---------------------------------------
 
 app.get('/api/health', async (_req, res) => {
   try {
     await mongoDb.command({ ping: 1 });
     res.json({ ok: true });
   } catch (error) {
-    console.error('Health check failed:', error);
-    res.status(500).json({ ok: false, error: 'database_unreachable' });
+    console.error('Health check falló:', error);
+    res.status(500).json({ ok: false, error: error.message });
   }
 });
 
 app.post('/api/auth/session', requireAuth, async (req, res) => {
+  const userDoc = req.userDoc || (await ensureUserDocument(req.auth));
+  res.json({
+    user: {
+      uid: userDoc.uid,
+      email: userDoc.email || null,
+      emailVerified: Boolean(userDoc.emailVerified),
+      displayName: userDoc.displayName || 'Visitante',
+      photoURL: userDoc.photoURL || null,
+      role: userDoc.role || 'usr',
+      stats: userDoc.stats || { reviews: 0, reactions: 0, karma: 0 }
+    }
+  });
+});
+
+app.get('/api/places', async (req, res) => {
   try {
-    const reviews = getCollection('reviews');
-    const reviewCount = await reviews.countDocuments({ uid: req.auth.uid });
-    const user = mapUserDoc(req.userDoc);
-    res.json({
-      user: {
-        ...user,
-        stats: {
-          reviews: reviewCount
-        }
-      }
-    });
+    const placesCollection = getCollection('places');
+    const docs = await placesCollection.find().sort({ name: 1 }).limit(200).toArray();
+    res.json({ places: docs.map(mapPlaceDoc).filter(Boolean) });
   } catch (error) {
-    console.error('Error en /api/auth/session:', error);
-    res.status(500).json({ error: 'internal_error' });
+    console.error('Error al listar lugares:', error);
+    res.status(500).json({ error: 'cannot_list_places' });
+  }
+});
+
+app.post('/api/places', requireAuth, async (req, res) => {
+  const payload = req.body || {};
+  try {
+    const placeDoc = await resolvePlace(
+      { place: payload },
+      req.auth.uid
+    );
+    res.status(201).json({ place: mapPlaceDoc(placeDoc) });
+  } catch (error) {
+    console.error('Error al crear lugar:', error);
+    if (error.message === 'place_required') {
+      return res.status(400).json({ error: 'place_data_required' });
+    }
+    if (error.message === 'place_coords_invalid') {
+      return res.status(400).json({ error: 'place_coords_invalid' });
+    }
+    res.status(500).json({ error: 'cannot_create_place' });
   }
 });
 
 app.post('/api/images', requireAuth, async (req, res) => {
   const payload = req.body || {};
-  const rawUrl =
-    typeof payload.u === 'string'
-      ? payload.u
-      : typeof payload.url === 'string'
-      ? payload.url
-      : '';
-  const url = rawUrl.trim();
+  const rawUrl = payload.url || payload.u;
+  const url = typeof rawUrl === 'string' ? rawUrl.trim() : '';
   if (!url) {
     return res.status(400).json({ error: 'image_url_required' });
   }
 
-  const width = toNumber(payload.w ?? payload.width);
-  const height = toNumber(payload.h ?? payload.height);
-  const size = toNumber(payload.s ?? payload.size);
   const provider =
-    typeof payload.pv === 'string'
-      ? payload.pv
-      : typeof payload.provider === 'string'
+    typeof payload.provider === 'string'
       ? payload.provider
+      : typeof payload.pv === 'string'
+      ? payload.pv
       : 'fb';
 
   const imageDoc = {
-    url,
+    ownerUid: req.auth.uid,
     provider,
-    width: width ?? undefined,
-    height: height ?? undefined,
-    size: size ?? undefined,
-    thumbnailUrl:
-      typeof payload.thumb === 'string'
-        ? payload.thumb.trim()
-        : typeof payload.thumbnailUrl === 'string'
-        ? payload.thumbnailUrl.trim()
-        : undefined,
-    uid: req.auth.uid,
+    url,
     createdAt: new Date(),
     updatedAt: new Date()
   };
+
+  if (typeof payload.thumbnailUrl === 'string' && payload.thumbnailUrl.trim()) {
+    imageDoc.thumbnailUrl = payload.thumbnailUrl.trim();
+  } else if (typeof payload.thumb === 'string' && payload.thumb.trim()) {
+    imageDoc.thumbnailUrl = payload.thumb.trim();
+  }
+
+  const widthCandidate = payload.width ?? payload.w;
+  const heightCandidate = payload.height ?? payload.h;
+  const sizeCandidate = payload.size ?? payload.s;
+
+  if (Number.isFinite(Number(widthCandidate))) {
+    imageDoc.width = Number(widthCandidate);
+  }
+  if (Number.isFinite(Number(heightCandidate))) {
+    imageDoc.height = Number(heightCandidate);
+  }
+  if (Number.isFinite(Number(sizeCandidate))) {
+    imageDoc.size = Number(sizeCandidate);
+  }
+
+  if (typeof payload.mimeType === 'string' && payload.mimeType.trim()) {
+    imageDoc.mimeType = payload.mimeType.trim();
+  } else if (typeof payload.mt === 'string' && payload.mt.trim()) {
+    imageDoc.mimeType = payload.mt.trim();
+  }
+
+  Object.keys(imageDoc).forEach(key => {
+    if (imageDoc[key] === undefined || imageDoc[key] === null) {
+      delete imageDoc[key];
+    }
+  });
 
   try {
     const images = getCollection('images');
@@ -571,542 +766,278 @@ app.post('/api/images', requireAuth, async (req, res) => {
     const inserted = await images.findOne({ _id: insertedId });
     res.status(201).json({ image: mapImageDoc(inserted) });
   } catch (error) {
-    console.error('Error al registrar metadata de imagen:', error);
-    res.status(500).json({ error: 'no_se_guardaron_los_metadatos' });
+    console.error('Error al guardar metadata de imagen:', error);
+    if (error?.code === 121) {
+      if (error?.errInfo) {
+        console.error('Schema validation details:', JSON.stringify(error.errInfo, null, 2));
+      }
+      return res.status(400).json({ error: 'image_metadata_invalid', details: error?.errInfo });
+    }
+    res.status(500).json({ error: 'cannot_store_image_metadata' });
   }
 });
 
 app.post('/api/admin/reset', requireAuth, async (req, res) => {
-  const seedDefaults = Boolean(req.body?.seedDefaults);
+  // Endpoint de compatibilidad para el botón "Limpiar" del frontend legacy.
   try {
-    const places = getCollection('places');
-    const reviews = getCollection('reviews');
-    const images = getCollection('images');
-    const votes = getCollection('review_votes');
-
-    const [placesResult, reviewsResult, imagesResult, votesResult] = await Promise.all([
-      places.deleteMany({}),
-      reviews.deleteMany({}),
-      images.deleteMany({}),
-      votes.deleteMany({})
+    await Promise.all([
+      getCollection('places').deleteMany({}),
+      getCollection('reviews').deleteMany({}),
+      getCollection('images').deleteMany({}),
+      getCollection('review_images').deleteMany({}),
+      getCollection('review_tags').deleteMany({}),
+      getCollection('review_reactions').deleteMany({}),
+      getCollection('place_categories').deleteMany({}),
+      getCollection('audit_events').deleteMany({})
     ]);
 
-    const storageResult = await purgeStorage(FIREBASE_STORAGE_ROOT);
-
-    const payload = {
-      ok: true,
-      cleared: {
-        places: placesResult?.deletedCount ?? 0,
-        reviews: reviewsResult?.deletedCount ?? 0,
-        images: imagesResult?.deletedCount ?? 0,
-        votes: votesResult?.deletedCount ?? 0
-      },
-      storage: storageResult,
-      seeded: false
-    };
-
-    if (seedDefaults) {
-      await ensureIndexesAndSeed();
-      payload.seeded = true;
-    }
-
-    res.json(payload);
-  } catch (error) {
-    console.error('Error al limpiar datos de la aplicaci\u00f3n:', error);
-    res.status(500).json({ error: 'no_se_pudieron_limpiar_los_datos' });
-  }
-});
-
-app.get('/api/places', async (_req, res) => {
-  try {
-    const places = getCollection('places');
-    const docs = await places.find().sort({ name: 1 }).toArray();
-    res.json({ places: docs.map(mapPlaceDoc) });
-  } catch (error) {
-    console.error('Error al listar lugares:', error);
-    res.status(500).json({ error: 'no_se_pudieron_obtener_los_lugares' });
-  }
-});
-
-app.post('/api/places', requireAuth, async (req, res) => {
-  const payload = req.body || {};
-  const rawId = typeof payload.id === 'string' ? payload.id.trim() : '';
-  const placeId = rawId || crypto.randomUUID();
-  const name = typeof payload.name === 'string' ? payload.name.trim() : '';
-
-  const address =
-    typeof payload.address === 'string'
-      ? payload.address.trim()
-      : typeof payload.city === 'string'
-      ? payload.city.trim()
-      : '';
-
-  const photoUrl =
-    typeof payload.photo === 'string'
-      ? payload.photo.trim()
-      : typeof payload.photoUrl === 'string'
-      ? payload.photoUrl.trim()
-      : '';
-
-  const coordsObject =
-    payload.coords &&
-    typeof payload.coords.lat === 'number' &&
-    typeof payload.coords.lng === 'number'
-      ? payload.coords
-      : {
-          lat: toNumber(payload.lat),
-          lng: toNumber(payload.lng)
-        };
-
-  if (!name || !coordsObject || !Number.isFinite(coordsObject.lat) || !Number.isFinite(coordsObject.lng)) {
-    return res.status(400).json({ error: 'nombre_y_coordenadas_requeridos' });
-  }
-
-  try {
-    const places = getCollection('places');
-    const now = new Date();
-    const update = {
-      name,
-      address,
-      photoUrl,
-      coords: { lat: coordsObject.lat, lng: coordsObject.lng },
-      location: {
-        type: 'Point',
-        coordinates: [coordsObject.lng, coordsObject.lat]
-      },
-      updatedAt: now
-    };
-
-    const { value } = await places.findOneAndUpdate(
-      { _id: placeId },
-      { $set: update, $setOnInsert: { createdAt: now } },
-      { upsert: true, returnDocument: 'after' }
+    await getCollection('counters').updateMany(
+      { _id: { $in: ['reviewPublicId', 'placeSlug'] } },
+      { $set: { next: 1 } }
     );
 
-    res.status(201).json({ place: mapPlaceDoc(value) });
+    res.json({
+      ok: true,
+      message: 'Se limpiaron las colecciones principales. Ejecuta el script de seed si deseas datos por defecto.'
+    });
   } catch (error) {
-    console.error('Error al crear/actualizar el lugar:', error);
-    res.status(500).json({ error: 'no_se_pudo_guardar_el_lugar' });
+    console.error('Error al limpiar datos:', error);
+    res.status(500).json({ ok: false, error: 'cannot_reset_database' });
   }
 });
 
 app.get('/api/reviews', async (req, res) => {
   try {
     const auth = await optionalAuth(req);
-    const uid = auth?.decoded?.uid || null;
-
-    const reviewsCollection = getCollection('reviews');
-    const pipeline = [
-      { $sort: { createdAt: -1 } },
-      { $limit: 200 },
-      {
-        $lookup: {
-          from: 'places',
-          localField: 'placeId',
-          foreignField: '_id',
-          as: 'place'
-        }
-      },
-      {
-        $lookup: {
-          from: 'users',
-          localField: 'uid',
-          foreignField: 'uid',
-          as: 'user'
-        }
-      },
-      {
-        $lookup: {
-          from: 'images',
-          localField: 'imageIds',
-          foreignField: '_id',
-          as: 'images'
-        }
-      }
-    ];
-
-    const docs = await reviewsCollection.aggregate(pipeline).toArray();
-    const reviewIds = docs.map(doc => doc._id);
-
-    const votesByReview = new Map();
-    if (uid && reviewIds.length > 0) {
-      const votes = await getCollection('review_votes')
-        .find({ uid, reviewId: { $in: reviewIds } })
-        .toArray();
-      votes.forEach(vote => {
-        votesByReview.set(vote.reviewId.toString(), Number(vote.value) || 0);
-      });
-    }
-
-    const payload = docs.map(doc => {
-      const placeDoc = doc.place?.[0] || null;
-      const userDoc = doc.user?.[0] || null;
-      const voteValue = votesByReview.get(doc._id.toString()) ?? 0;
-      return mapReviewDoc(doc, placeDoc ? mapPlaceDoc(placeDoc) : null, userDoc, doc.images, voteValue);
-    });
-
-    res.json({ reviews: payload });
+    const reviews = await fetchReviews({}, { limit: 100, currentUid: auth?.decoded?.uid || null });
+    res.json({ reviews });
   } catch (error) {
-    console.error('Error al listar reseÃ±as:', error);
-    res.status(500).json({ error: 'no_se_pudieron_obtener_las_resenas' });
+    console.error('Error al listar reseñas:', error);
+    res.status(500).json({ error: 'cannot_list_reviews' });
   }
 });
 
 app.post('/api/reviews', requireAuth, async (req, res) => {
   const body = req.body || {};
-  const placePayload = body.place || {};
-  const placeId =
-    typeof placePayload.id === 'string'
-      ? placePayload.id.trim()
-      : typeof body.placeId === 'string'
-      ? body.placeId.trim()
-      : typeof body.pl === 'string'
-      ? body.pl.trim()
-      : '';
-
-  if (!placeId) {
-    return res.status(400).json({ error: 'place_id_required' });
-  }
-
-  const rating = toNumber(body.rating ?? body.rt);
-  if (!Number.isFinite(rating) || rating < 1 || rating > 5) {
-    return res.status(400).json({ error: 'rating_invalid' });
-  }
-
-  const note =
-    typeof body.note === 'string'
-      ? body.note.trim()
-      : typeof body.tx === 'string'
-      ? body.tx.trim()
-      : '';
-
-  const tags = Array.isArray(body.tags)
-    ? body.tags.map(tag => String(tag).trim()).filter(Boolean)
-    : Array.isArray(body.tg)
-    ? body.tg.map(tag => String(tag).trim()).filter(Boolean)
-    : [];
-
-  const imageIdsInput =
-    Array.isArray(body.images) && body.images.length
-      ? body.images
-      : Array.isArray(body.imageIds) && body.imageIds.length
-      ? body.imageIds
-      : Array.isArray(body.im)
-      ? body.im
-      : [];
-
-  const imageObjectIds = imageIdsInput
-    .map(id => (typeof id === 'string' ? parseObjectId(id) : null))
-    .filter(Boolean);
-
-  const places = getCollection('places');
-  const reviews = getCollection('reviews');
-  const images = getCollection('images');
-
   try {
+    const rating = Number(body.rating);
+    if (!Number.isFinite(rating) || rating < 1 || rating > 5) {
+      return res.status(400).json({ error: 'rating_invalid' });
+    }
+
+    const tags = Array.isArray(body.tags) ? body.tags : [];
+    const note = typeof body.note === 'string' ? body.note.trim() : '';
+    const summary = note ? note.slice(0, 160) : '';
+    const imageIdsInput = Array.isArray(body.imageIds) ? body.imageIds : [];
+
+    const placeDoc = await resolvePlace(body, req.auth.uid);
+    const placeId = placeDoc._id;
+
+    const tagsDocs = await ensureTags(tags);
+    const reviewPublicId = await generateReviewPublicId();
     const now = new Date();
-    let placeDoc = await places.findOne({ _id: placeId });
 
-    const coords =
-      placePayload.coords &&
-      typeof placePayload.coords.lat === 'number' &&
-      typeof placePayload.coords.lng === 'number'
-        ? placePayload.coords
-        : {
-            lat: toNumber(placePayload.lat),
-            lng: toNumber(placePayload.lng)
-          };
-
-    if (!placeDoc) {
-      if (!placePayload.name || !Number.isFinite(coords.lat) || !Number.isFinite(coords.lng)) {
-        return res.status(400).json({ error: 'place_data_incomplete' });
-      }
-      const newPlace = {
-        _id: placeId,
-        name: placePayload.name,
-        address: placePayload.address || body.city || '',
-        photoUrl: placePayload.photo || '',
-        coords: { lat: coords.lat, lng: coords.lng },
-        location: { type: 'Point', coordinates: [coords.lng, coords.lat] },
-        createdAt: now,
-        updatedAt: now
-      };
-      await places.insertOne(newPlace);
-      placeDoc = newPlace;
-    } else {
-      const update = {
-        updatedAt: now
-      };
-
-      if (placePayload.name && placePayload.name !== placeDoc.name) {
-        update.name = placePayload.name;
-      }
-      if (placePayload.address && placePayload.address !== placeDoc.address) {
-        update.address = placePayload.address;
-      }
-      if (placePayload.photo) {
-        update.photoUrl = placePayload.photo;
-      }
-      if (Number.isFinite(coords.lat) && Number.isFinite(coords.lng)) {
-        update.coords = { lat: coords.lat, lng: coords.lng };
-        update.location = { type: 'Point', coordinates: [coords.lng, coords.lat] };
-      }
-      if (Object.keys(update).length > 1) {
-        await places.updateOne({ _id: placeId }, { $set: update });
-        placeDoc = await places.findOne({ _id: placeId });
-      }
-    }
-
-    let linkedImages = [];
-    if (imageObjectIds.length > 0) {
-      linkedImages = await images
-        .find({ _id: { $in: imageObjectIds }, uid: req.auth.uid })
-        .toArray();
-    }
-
+    const reviewsCollection = getCollection('reviews');
     const reviewDoc = {
+      publicId: reviewPublicId,
       placeId,
-      uid: req.auth.uid,
-      authorName: req.userDoc?.displayName || req.auth.name || 'Visitante',
+      placeSlug: placeDoc.slug,
+      authorUid: req.auth.uid,
+      authorDisplayName: req.userDoc?.displayName || req.auth.name || 'Visitante',
+      authorPhotoURL: req.userDoc?.photoURL || null,
       rating,
       note,
-      tags,
-      city: body.city || placePayload.address || placeDoc?.address || '',
-      coords:
-        Number.isFinite(coords.lat) && Number.isFinite(coords.lng)
-          ? { lat: coords.lat, lng: coords.lng }
-          : placeDoc?.coords || null,
-      imageIds: linkedImages.map(image => image._id),
-      photoUrl: body.photo || placePayload.photo || '',
-      upvotes: 0,
-      downvotes: 0,
+      summary,
+      tags: tagsDocs.map(tag => tag.slug),
+      stats: { likes: 0, dislikes: 0 },
+      visibility: 'public',
+      moderation: {
+        status: 'approved',
+        reviewedByUid: null,
+        reviewedAt: now
+      },
       createdAt: now,
       updatedAt: now
     };
 
-    const { insertedId } = await reviews.insertOne(reviewDoc);
+    await reviewsCollection.insertOne(reviewDoc);
 
-    const inserted = await reviews.findOne({ _id: insertedId });
-    const responsePlace = placeDoc ? mapPlaceDoc(placeDoc) : null;
-    const mappedReview = mapReviewDoc(inserted, responsePlace, req.userDoc, linkedImages, 0);
+    if (tagsDocs.length) {
+      await attachReviewTags(reviewPublicId, tagsDocs, req.auth.uid);
+    }
+
+    if (imageIdsInput.length) {
+      const imagesCollection = getCollection('images');
+      const imageObjectIds = imageIdsInput
+        .map(toObjectId)
+        .filter(Boolean);
+
+      if (imageObjectIds.length) {
+        const ownedImages = await imagesCollection
+          .find({ _id: { $in: imageObjectIds }, ownerUid: req.auth.uid })
+          .toArray();
+        if (ownedImages.length) {
+          await attachReviewImages(
+            reviewPublicId,
+            ownedImages.map(image => image._id),
+            req.auth.uid
+          );
+        }
+      }
+    }
+
+    await updatePlaceStats(placeDoc, rating);
+
+    const [createdReview] = await fetchReviews(
+      { publicId: reviewPublicId },
+      { limit: 1, currentUid: req.auth.uid }
+    );
 
     res.status(201).json({
-      review: mappedReview,
-      place: responsePlace
+      review: createdReview,
+      place: mapPlaceDoc(await getCollection('places').findOne({ _id: placeId }))
     });
   } catch (error) {
-    console.error('Error al crear la reseÃ±a:', error);
-    res.status(500).json({ error: 'no_se_pudo_guardar_la_resena' });
+    console.error('Error al crear reseña:', error);
+    if (error.message === 'place_required' || error.message === 'place_coords_invalid') {
+      return res.status(400).json({ error: error.message });
+    }
+    res.status(500).json({ error: 'cannot_create_review' });
   }
 });
 
 app.post('/api/reviews/:id/vote', requireAuth, async (req, res) => {
-  const reviewId = parseObjectId(req.params.id);
+  const reviewId = String(req.params.id || '').trim();
   if (!reviewId) {
     return res.status(400).json({ error: 'invalid_review_id' });
   }
 
-  const value = toNumber(req.body?.value ?? req.body?.delta);
+  const value = Number(req.body?.value ?? req.body?.delta);
   if (![1, 0, -1].includes(value)) {
     return res.status(400).json({ error: 'invalid_vote_value' });
   }
 
   try {
-    const votes = getCollection('review_votes');
-    const reviews = getCollection('reviews');
+    const reviewsCollection = getCollection('reviews');
+    const reviewDoc = await reviewsCollection.findOne({ publicId: reviewId });
+    if (!reviewDoc) {
+      return res.status(404).json({ error: 'review_not_found' });
+    }
+
+    const reactions = getCollection('review_reactions');
     const now = new Date();
 
-    const existingVote = await votes.findOne({ reviewId, uid: req.auth.uid });
-    if (existingVote && existingVote.value === value) {
-      const reviewDoc = await reviews.findOne(
-        { _id: reviewId },
-        { projection: { upvotes: 1, downvotes: 1 } }
-      );
+    const existingReaction = await reactions.findOne({
+      reviewPublicId: reviewDoc.publicId,
+      uid: req.auth.uid
+    });
+
+    if (existingReaction && existingReaction.value === value) {
       return res.json({
-        reviewId: reviewId.toString(),
-        up: Number(reviewDoc?.upvotes) || 0,
-        down: Number(reviewDoc?.downvotes) || 0,
-        my: Number(existingVote.value) || 0
+        reviewId: reviewDoc.publicId,
+        up: Number(reviewDoc.stats?.likes) || 0,
+        down: Number(reviewDoc.stats?.dislikes) || 0,
+        my: value
       });
     }
 
-    const inc = { upvotes: 0, downvotes: 0 };
+    const reactionPayload = {
+      reviewPublicId: reviewDoc.publicId,
+      reviewObjectId: reviewDoc._id,
+      reviewId: reviewDoc.publicId,
+      uid: req.auth.uid,
+      userDisplayName: req.userDoc?.displayName || req.auth.name || req.userDoc?.email || null,
+      userPhotoURL: req.userDoc?.photoURL || null,
+      value,
+      updatedAt: now
+    };
 
-    if (existingVote) {
-      if (existingVote.value === 1) inc.upvotes -= 1;
-      if (existingVote.value === -1) inc.downvotes -= 1;
+    let likesDelta = 0;
+    let dislikesDelta = 0;
+
+    if (existingReaction) {
+      if (existingReaction.value === 1) likesDelta -= 1;
+      if (existingReaction.value === -1) dislikesDelta -= 1;
     }
 
-    if (value === 1) inc.upvotes += 1;
-    if (value === -1) inc.downvotes += 1;
+    if (value === 1) likesDelta += 1;
+    if (value === -1) dislikesDelta += 1;
 
-    if (existingVote && value === 0) {
-      await votes.deleteOne({ _id: existingVote._id });
+    if (existingReaction) {
+      if (value === 0) {
+        await reactions.deleteOne({ _id: existingReaction._id });
+      } else {
+        await reactions.updateOne(
+          { _id: existingReaction._id },
+          { $set: reactionPayload }
+        );
+      }
     } else if (value !== 0) {
-      await votes.updateOne(
-        { reviewId, uid: req.auth.uid },
+      await reactions.updateOne(
+        { reviewPublicId: reviewDoc.publicId, uid: req.auth.uid },
         {
-          $set: {
-            value,
-            updatedAt: now
-          },
-          $setOnInsert: {
-            createdAt: now
-          }
+          $set: reactionPayload,
+          $setOnInsert: { createdAt: now }
         },
         { upsert: true }
       );
     }
 
-    const update = {
-      $set: { updatedAt: now }
+    const currentStats = reviewDoc.stats || { likes: 0, dislikes: 0 };
+    const newStats = {
+      likes: Math.max(0, (currentStats.likes || 0) + likesDelta),
+      dislikes: Math.max(0, (currentStats.dislikes || 0) + dislikesDelta)
     };
 
-    const incUpdate = {};
-    if (inc.upvotes !== 0) {
-      incUpdate.upvotes = inc.upvotes;
-    }
-    if (inc.downvotes !== 0) {
-      incUpdate.downvotes = inc.downvotes;
-    }
-    if (Object.keys(incUpdate).length > 0) {
-      update.$inc = incUpdate;
-    }
-
-    const { value: updated } = await reviews.findOneAndUpdate(
-      { _id: reviewId },
-      update,
+    await reviewsCollection.updateOne(
+      { _id: reviewDoc._id },
       {
-        returnDocument: 'after',
-        projection: { upvotes: 1, downvotes: 1 }
+        $set: {
+          'stats.likes': newStats.likes,
+          'stats.dislikes': newStats.dislikes,
+          updatedAt: now
+        }
       }
     );
 
-    if (!updated) {
-      return res.status(404).json({ error: 'review_not_found' });
-    }
-
     res.json({
-      reviewId: reviewId.toString(),
-      up: Number(updated.upvotes) || 0,
-      down: Number(updated.downvotes) || 0,
+      reviewId: reviewDoc.publicId,
+      up: newStats.likes,
+      down: newStats.dislikes,
       my: value
     });
   } catch (error) {
-    console.error('Error al registrar el voto:', error);
-    res.status(500).json({ error: 'no_se_pudo_registrar_el_voto' });
+    console.error('Error al registrar voto:', error);
+    res.status(500).json({ error: 'cannot_register_vote' });
   }
 });
 
-app.get('/api/nearby-geojson', async (req, res) => {
-  const lat = toNumber(req.query.lat);
-  const lng = toNumber(req.query.lng);
-  const radius = toNumber(req.query.radius);
-  const limit = toNumber(req.query.limit);
-
-  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
-    return res.status(400).json({ error: 'lat_y_lng_requeridos' });
-  }
-
-  const radiusMeters = Number.isFinite(radius) && radius > 0 ? radius : 3000;
-  const limitRows =
-    limit && limit > 0 ? Math.min(Math.max(Math.floor(limit), 1), 200) : 50;
-
-  try {
-    const places = getCollection('places');
-    const pipeline = [
-      {
-        $geoNear: {
-          near: { type: 'Point', coordinates: [lng, lat] },
-          distanceField: 'distance',
-          maxDistance: radiusMeters,
-          query: { location: { $exists: true } },
-          spherical: true
-        }
-      },
-      { $limit: limitRows },
-      {
-        $project: {
-          _id: 1,
-          name: 1,
-          address: 1,
-          photoUrl: 1,
-          coords: 1,
-          distance: 1
-        }
-      }
-    ];
-
-    const docs = await places.aggregate(pipeline).toArray();
-    const features = docs.map(doc => {
-      const coords =
-        doc.coords &&
-        typeof doc.coords.lat === 'number' &&
-        typeof doc.coords.lng === 'number'
-          ? { lat: doc.coords.lat, lng: doc.coords.lng }
-          : null;
-      return {
-        type: 'Feature',
-        geometry: coords
-          ? {
-              type: 'Point',
-              coordinates: [coords.lng, coords.lat]
-            }
-          : null,
-        properties: {
-          id: doc._id,
-          name: doc.name,
-          address: doc.address || '',
-          photo: doc.photoUrl || '',
-          latitude: coords?.lat ?? null,
-          longitude: coords?.lng ?? null,
-          distance: doc.distance ?? null
-        }
-      };
-    });
-
-    res.json({
-      type: 'FeatureCollection',
-      features
-    });
-  } catch (error) {
-    console.error('Error al consultar lugares cercanos:', error);
-    res.status(500).json({ error: 'no_se_pudieron_obtener_los_lugares_cercanos' });
-  }
-});
-
-if (fs.existsSync(STATIC_DIR)) {
-  app.use(express.static(STATIC_DIR));
-} else {
-  console.warn('Directorio estatico no encontrado:', STATIC_DIR);
-}
-
+// Fallback: servir frontend si existe (Express 5 compatible)
 app.use((req, res, next) => {
-  if (req.method !== 'GET') {
-    return next();
-  }
-  const requested = req.path;
-  if (requested.startsWith('/api') || requested === '/health') {
-    return next();
-  }
+  if (req.method !== 'GET') return next();
+  if (req.path.startsWith('/api')) return next();
   return res.sendFile(path.join(STATIC_DIR, 'index.html'), error => {
-    if (error) {
-      next();
-    }
+    if (error) next();
   });
 });
+
+
+// ---------------------------------------
+// Inicialización
+// ---------------------------------------
 
 async function startServer() {
   try {
     await mongoClient.connect();
     mongoDb = mongoClient.db(MONGODB_DB_NAME);
-    await ensureIndexesAndSeed();
+    console.log(`MongoDB conectado a ${MONGODB_DB_NAME}`);
+
     app.listen(PORT, HOST, () => {
       const localUrl = `http://${HOST === '0.0.0.0' ? '127.0.0.1' : HOST}:${PORT}`;
-      console.log(`API y frontend disponibles en ${localUrl}`);
+      console.log(`Servidor escuchando en ${localUrl}`);
     });
   } catch (error) {
-    console.error('No se pudo inicializar la aplicaciÃ³n:', error);
+    console.error('No se pudo iniciar el servidor:', error);
     process.exit(1);
   }
 }
@@ -1116,6 +1047,8 @@ startServer();
 async function gracefulShutdown() {
   try {
     await mongoClient.close();
+  } catch (error) {
+    console.warn('Error al cerrar MongoDB:', error);
   } finally {
     process.exit(0);
   }
@@ -1123,13 +1056,3 @@ async function gracefulShutdown() {
 
 process.on('SIGINT', gracefulShutdown);
 process.on('SIGTERM', gracefulShutdown);
-
-
-
-
-
-
-
-
-
-

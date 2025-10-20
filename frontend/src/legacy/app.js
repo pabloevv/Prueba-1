@@ -48,7 +48,8 @@ let dataLoaded = false;
 function normalizeReviewEntry(rawReview, currentUser) {
   if (!rawReview) return null;
   const user = currentUser || getStoredUser();
-  const place = rawReview.placeId ? placeById[rawReview.placeId] : null;
+  const placeKey = rawReview.placeId || rawReview.placeSlug || null;
+  const place = placeKey ? placeById[placeKey] : null;
   const hasCoords =
     rawReview.coords &&
     typeof rawReview.coords.lat === 'number' &&
@@ -78,15 +79,39 @@ function normalizeReviewEntry(rawReview, currentUser) {
         .map(item => (item && item.url ? { ...item } : null))
         .filter(Boolean)
     : [];
-  const fallbackPhoto = place?.photo || '';
-  const photo =
-    rawReview.photo ||
-    (images.length ? images[0].url : '') ||
-    fallbackPhoto;
+  const fallbackPhoto = rawReview.photo || place?.photo || '';
+  const photo = images.length ? images[0].url : fallbackPhoto;
+
+  const reactionSummary =
+    rawReview.reactionSummary && typeof rawReview.reactionSummary === 'object'
+      ? {
+          likes: Number(rawReview.reactionSummary.likes) || 0,
+          dislikes: Number(rawReview.reactionSummary.dislikes) || 0
+        }
+      : { likes: Number(rawReview.up) || 0, dislikes: Number(rawReview.down) || 0 };
+
+  const likedBy =
+    Array.isArray(rawReview.likedBy) && rawReview.likedBy.length
+      ? rawReview.likedBy
+          .map(item => (item && item.uid ? { ...item } : null))
+          .filter(Boolean)
+      : [];
+  const dislikedBy =
+    Array.isArray(rawReview.dislikedBy) && rawReview.dislikedBy.length
+      ? rawReview.dislikedBy
+          .map(item => (item && item.uid ? { ...item } : null))
+          .filter(Boolean)
+      : [];
+
+  let myVote = Number(rawReview.myVote || 0);
+  if (!myVote && user?.uid) {
+    if (likedBy.some(entry => entry.uid === user.uid)) myVote = 1;
+    if (dislikedBy.some(entry => entry.uid === user.uid)) myVote = -1;
+  }
 
   return {
-    id: rawReview.id,
-    placeId: rawReview.placeId,
+    id: rawReview.id || rawReview.publicId,
+    placeId: placeKey,
     city: rawReview.city || place?.address || '',
     rating: Number(rawReview.rating) || 0,
     photo,
@@ -98,12 +123,15 @@ function normalizeReviewEntry(rawReview, currentUser) {
     userUid,
     userName: resolvedName,
     me: belongsToUser,
-    up: Number(rawReview.up) || 0,
-    down: Number(rawReview.down) || 0,
+    up: reactionSummary.likes,
+    down: reactionSummary.dislikes,
     createdAt,
     coords,
-    myVote: Number(rawReview.myVote || 0),
-    images
+    myVote,
+    images,
+    likedBy,
+    dislikedBy,
+    reactionSummary
   };
 }
 
@@ -1543,12 +1571,19 @@ async function saveReview() {
               method: 'POST',
               body: JSON.stringify({
                 u: primaryPhotoUrl,
-                w: modalSelection.uploadMeta?.width,
-                h: modalSelection.uploadMeta?.height,
-                s: modalSelection.uploadMeta?.size,
+                w: Number.isFinite(modalSelection.uploadMeta?.width)
+                  ? modalSelection.uploadMeta.width
+                  : undefined,
+                h: Number.isFinite(modalSelection.uploadMeta?.height)
+                  ? modalSelection.uploadMeta.height
+                  : undefined,
+                s: Number.isFinite(modalSelection.uploadMeta?.size)
+                  ? modalSelection.uploadMeta.size
+                  : undefined,
                 pv: 'fb'
               })
-            }
+            },
+            { auth: true }
           );
 
           if (imageResponse.ok && imagePayload?.image?.id) {
