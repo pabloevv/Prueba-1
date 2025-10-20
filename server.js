@@ -199,6 +199,15 @@ function mapReviewDoc(doc, myVotes, likedByMap, dislikedByMap) {
 
   const mappedTags = Array.isArray(doc.tags) ? doc.tags : [];
 
+  const reactionSummary = {
+    likes: Number(stats.likes) || 0,
+    dislikes: Number(stats.dislikes) || 0
+  };
+
+  const likedBy = likedByMap.get(doc.publicId) || [];
+  const dislikedBy = dislikedByMap.get(doc.publicId) || [];
+  const myVote = myVotes.get(doc.publicId) || 0;
+
   return {
     id: doc.publicId,
     placeId: placeDoc?.slug || doc.placeSlug || '',
@@ -210,8 +219,8 @@ function mapReviewDoc(doc, myVotes, likedByMap, dislikedByMap) {
     userId: null,
     userUid: doc.authorUid || null,
     userName: doc.authorDisplayName || '',
-    up: Number(stats.likes) || 0,
-    down: Number(stats.dislikes) || 0,
+    up: reactionSummary.likes,
+    down: reactionSummary.dislikes,
     createdAt:
       doc.createdAt instanceof Date
         ? doc.createdAt.getTime()
@@ -220,9 +229,10 @@ function mapReviewDoc(doc, myVotes, likedByMap, dislikedByMap) {
         : Date.parse(doc.createdAt) || Date.now(),
     coords,
     images,
-    myVote: myVotes.get(doc.publicId) || 0,
-    likedBy: likedByMap.get(doc.publicId) || [],
-    dislikedBy: dislikedByMap.get(doc.publicId) || []
+    myVote,
+    likedBy,
+    dislikedBy,
+    reactionSummary
   };
 }
 
@@ -239,6 +249,14 @@ async function loadReactionData(publicIds, currentUid) {
     .limit(limit)
     .toArray();
 
+  const deriveValue = doc => {
+    if (!doc) return 0;
+    if (typeof doc.value === 'number') return doc.value;
+    if (doc.liked) return 1;
+    if (doc.disliked) return -1;
+    return 0;
+  };
+
   const myVotes = new Map();
   const likedByMap = new Map();
   const dislikedByMap = new Map();
@@ -246,26 +264,31 @@ async function loadReactionData(publicIds, currentUid) {
   docs.forEach(doc => {
     const reviewPublicId = doc.reviewPublicId;
 
+    const voteValue = deriveValue(doc);
+
     if (currentUid && doc.uid === currentUid && !myVotes.has(reviewPublicId)) {
-      myVotes.set(reviewPublicId, doc.value);
+      myVotes.set(reviewPublicId, voteValue);
     }
 
     const sample = {
       uid: doc.uid,
       displayName: doc.userDisplayName || null,
       photoURL: doc.userPhotoURL || null,
-      value: doc.value,
+      value: voteValue,
+      liked: Boolean(doc.liked || voteValue === 1),
+      disliked: Boolean(doc.disliked || voteValue === -1),
       updatedAt:
         doc.updatedAt instanceof Date
           ? doc.updatedAt.getTime()
           : Date.parse(doc.updatedAt || '') || null
     };
 
-    if (doc.value === 1) {
+    if (sample.liked) {
       const list = likedByMap.get(reviewPublicId) || [];
       if (list.length < 12) list.push(sample);
       likedByMap.set(reviewPublicId, list);
-    } else if (doc.value === -1) {
+    }
+    if (sample.disliked) {
       const list = dislikedByMap.get(reviewPublicId) || [];
       if (list.length < 12) list.push(sample);
       dislikedByMap.set(reviewPublicId, list);
@@ -932,7 +955,17 @@ app.post('/api/reviews/:id/vote', requireAuth, async (req, res) => {
       uid: req.auth.uid
     });
 
-    if (existingReaction && existingReaction.value === value) {
+    const deriveValue = doc => {
+      if (!doc) return 0;
+      if (typeof doc.value === 'number') return doc.value;
+      if (doc.liked) return 1;
+      if (doc.disliked) return -1;
+      return 0;
+    };
+
+    const existingValue = deriveValue(existingReaction);
+
+    if (existingReaction && existingValue === value) {
       return res.json({
         reviewId: reviewDoc.publicId,
         up: Number(reviewDoc.stats?.likes) || 0,
@@ -941,6 +974,9 @@ app.post('/api/reviews/:id/vote', requireAuth, async (req, res) => {
       });
     }
 
+    const liked = value === 1;
+    const disliked = value === -1;
+
     const reactionPayload = {
       reviewPublicId: reviewDoc.publicId,
       reviewObjectId: reviewDoc._id,
@@ -948,20 +984,23 @@ app.post('/api/reviews/:id/vote', requireAuth, async (req, res) => {
       uid: req.auth.uid,
       userDisplayName: req.userDoc?.displayName || req.auth.name || req.userDoc?.email || null,
       userPhotoURL: req.userDoc?.photoURL || null,
-      value,
+      liked,
+      disliked,
       updatedAt: now
     };
+
+    if (value !== 0) {
+      reactionPayload.value = value;
+    }
 
     let likesDelta = 0;
     let dislikesDelta = 0;
 
-    if (existingReaction) {
-      if (existingReaction.value === 1) likesDelta -= 1;
-      if (existingReaction.value === -1) dislikesDelta -= 1;
-    }
+    if (existingValue === 1) likesDelta -= 1;
+    if (existingValue === -1) dislikesDelta -= 1;
 
-    if (value === 1) likesDelta += 1;
-    if (value === -1) dislikesDelta += 1;
+    if (liked) likesDelta += 1;
+    if (disliked) dislikesDelta += 1;
 
     if (existingReaction) {
       if (value === 0) {
@@ -1020,7 +1059,6 @@ app.use((req, res, next) => {
     if (error) next();
   });
 });
-
 
 // ---------------------------------------
 // Inicialización
